@@ -1,0 +1,47 @@
+diff --git a/crates/tpt-sci-ode b/crates/tpt-sci-ode
+--- a/crates/tpt-sci-ode/Cargo.toml	2026-10-10 02:45:11.472994100 +1300
++++ b/crates/tpt-sci-ode/Cargo.toml	2026-10-10 08:11:39.122654200 +1300
+@@ -22,9 +22,9 @@
+ 
+ # Cranelift JIT compilation backend for DiffSL RHS codegen
+ cranelift-codegen = { version = "0.135", features = ["host-arch"] }
+-cranelift-frontend = "0.109"
+-cranelift-module = "0.109"
+-cranelift-jit = "0.109"
++cranelift-frontend = "0.135"
++cranelift-module = "0.135"
++cranelift-jit = "0.135"
+ cranelift-native = { version = "0.135", optional = true }
+ target-lexicon = "0.13"
+ 
+diff --git a/crates/tpt-sci-ode b/crates/tpt-sci-ode
+--- a/crates/tpt-sci-ode/benches/solve.rs	2026-10-10 02:45:11.480002500 +1300
++++ b/crates/tpt-sci-ode/benches/solve.rs	2026-10-10 08:16:35.439653800 +1300
+@@ -1,4 +1,5 @@
+-use criterion::{Criterion, black_box, criterion_group, criterion_main};
++use criterion::{Criterion, criterion_group, criterion_main};
++use std::hint::black_box;
+ use tpt_sci_ode::{Method, OdeProblem};
+ 
+ fn bench_exponential_decay(c: &mut Criterion) {
+diff --git a/crates/tpt-sci-ode b/crates/tpt-sci-ode
+--- a/crates/tpt-sci-ode/src/jit.rs	2026-10-10 02:45:11.484006800 +1300
++++ b/crates/tpt-sci-ode/src/jit.rs	2026-10-10 08:12:25.267470200 +1300
+@@ -290,7 +290,7 @@
+                 .ins()
+                 .call(extern_ref, &[nstates_val, id_val, t_val, y_ptr, dydt_ptr]);
+             builder.ins().return_(&[]);
+-            builder.finalize();
++            builder.finalize(module.isa().frontend_config());
+         }
+ 
+         // Define the trampoline function
+@@ -337,7 +337,7 @@
+         );
+ 
+         builder.ins().return_(&[]);
+-        builder.finalize();
++        builder.finalize(module.isa().frontend_config());
+ 
+         // Define the function in the module
+         let func_name = format!("jit_rhs_{}", nstates);

@@ -1,0 +1,54 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/twin-core",
+    "crates/twin-store",
+    "crates/twin-geometry",
+    "crates/twin-collab",
+    "crates/twin-sim",
+    "crates/twin-sensors",
+    "crates/twin-package",
+    "crates/twin-license",
+    "crates/twin-app",
+    "vendor/tpt-sci-ode",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/tpt-apps/tpt-app-digital-twin"
+publish = false
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+ed25519-dalek = { version = "2", features = ["std"] }
+base64 = "0.22"
+sha2 = "0.10"
+zip = { version = "2", default-features = false, features = ["deflate"] }
+chacha20poly1305 = "0.10"
+argon2 = "0.5"
+getrandom = "0.3"
+
+
+# TPT-Solutions foundation crates, pinned to master on 2026-10-10 (see docs/ARCHITECTURE.md).
+# Only the crates Twin uses so far. Others are added when a crate needs them.
+tpt-vertex-collab = { git = "https://github.com/TPT-Solutions/tpt-vertex", rev = "898e6efd4befd9a9405d791d4d83570f8fe49a98", default-features = false }
+tpt-keystone = { git = "https://github.com/TPT-Solutions/tpt-keystone-db", rev = "b861edd6f01e08061e0e1f3a86e6a2a1e1f2f449", default-features = false }
+
+# Patched copy of tpt-sci-ode (cranelift version fix). See vendor/tpt-sci-ode/VENDORED.md.
+tpt-sci-ode = { path = "vendor/tpt-sci-ode" }
+
+# Internal crates
+twin-core = { path = "crates/twin-core" }
+twin-store = { path = "crates/twin-store" }
+twin-geometry = { path = "crates/twin-geometry" }
+twin-collab = { path = "crates/twin-collab" }
+twin-sim = { path = "crates/twin-sim" }
+twin-sensors = { path = "crates/twin-sensors" }
+twin-package = { path = "crates/twin-package" }
+twin-license = { path = "crates/twin-license" }

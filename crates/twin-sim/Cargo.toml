@@ -1,0 +1,13 @@
+[package]
+name = "twin-sim"
+description = "Rigid-body and simple continuum simulation."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+thiserror.workspace = true
+tpt-sci-ode.workspace = true
+twin-core = { path = "../twin-core" }

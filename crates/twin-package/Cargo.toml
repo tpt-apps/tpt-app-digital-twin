@@ -1,0 +1,22 @@
+[package]
+name = "twin-package"
+description = "The .twin package container: manifest, signing and optional encryption."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+argon2.workspace = true
+chacha20poly1305.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+twin-core = { path = "../twin-core" }
+zip.workspace = true
+
+[dev-dependencies]

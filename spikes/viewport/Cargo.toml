@@ -1,0 +1,14 @@
+[package]
+name = "viewport-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Spike: draw a custom GL scene inside an egui window (Phase 7 viewport)."
+
+# Not part of the Twin workspace: eframe pulls in a large GUI dependency tree.
+[workspace]
+
+[dependencies]
+eframe = { version = "0.31", default-features = false, features = ["glow", "default_fonts"] }
+egui = "0.31"
+egui_glow = "0.31"

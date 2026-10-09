@@ -1,0 +1,54 @@
+[package]
+name = "tpt-sci-ode"
+description = "ODE/DAE solving for the tpt-science pillar (from-scratch, no diffsol)"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+authors = ["TPT Solutions"]
+repository = "https://github.com/TPT-Solutions/tpt-science"
+homepage = "https://github.com/TPT-Solutions/tpt-science"
+readme = "README.md"
+documentation = "https://docs.rs/tpt-sci-ode"
+keywords = ["ode", "dae", "diffeq", "science", "simulation"]
+categories = ["science", "simulation", "mathematics"]
+
+[lib]
+bench = false
+
+[dependencies]
+tpt-math-numeric = "0.1.0"
+thiserror = "2"
+
+# Cranelift JIT compilation backend for DiffSL RHS codegen
+cranelift-codegen = { version = "0.135", features = ["host-arch"] }
+cranelift-frontend = "0.135"
+cranelift-module = "0.135"
+cranelift-jit = "0.135"
+cranelift-native = { version = "0.135", optional = true }
+target-lexicon = "0.13"
+
+# Optional verification oracle only (NOT shipped): compare our from-scratch
+# trajectories against diffsol's on a battery of problems. It is a dev-only
+# dependency gated behind the `verify-diffsol` feature and excluded from
+# `cargo deny` license scanning (deny.toml `include-dev = false`), so it never
+# taints the shipped, dual-licensed graph. Enable with `--features verify-diffsol`.
+diffsol = { version = "0.16.1", default-features = false, features = ["faer"], optional = true }
+
+[dev-dependencies]
+approx = "0.5"
+criterion = "0.8"
+
+[features]
+default = ["cranelift-jit"]
+verify-diffsol = ["dep:diffsol"]
+# Use native Cranelift backend (requires target-lexicon and cranelift-native)
+cranelift-jit = ["cranelift-native"]
+
+
+[[bench]]
+name = "solve"
+harness = false
+
+[package.metadata.docs.rs]
+all-features = true

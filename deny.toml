@@ -1,0 +1,36 @@
+# cargo-deny policy. Run: cargo deny check
+# Twin must stay compatible with its dual MIT OR Apache-2.0 licence (spec §5).
+
+[licenses]
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "Unicode-3.0",
+    "Unicode-DFS-2016",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Apache-2.0 WITH LLVM-exception",
+]
+confidence-threshold = 0.9
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = [
+    "https://github.com/TPT-Solutions/tpt-vertex",
+    "https://github.com/TPT-Solutions/tpt-keystone-db",
+    "https://github.com/TPT-Solutions/tpt-appfront",
+    "https://github.com/TPT-Solutions/tpt-engineering",
+    "https://github.com/TPT-Solutions/tpt-science",
+    "https://github.com/TPT-Solutions/tpt-math",
+    "https://github.com/TPT-Solutions/tpt-perception",
+    "https://github.com/TPT-Solutions/tpt-control",
+    "https://github.com/TPT-Solutions/tpt-primitives",
+]

@@ -1,0 +1,17 @@
+[package]
+name = "twin-store"
+description = "Local Keystone database layer for twin state, results, sensor history and version metadata."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+thiserror.workspace = true
+tpt-keystone.workspace = true
+twin-core = { path = "../twin-core" }
+
+[dev-dependencies]
+tempfile = "3"

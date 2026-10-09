@@ -1,0 +1,11 @@
+[package]
+name = "twin-collab"
+description = "LAN-only real-time multi-user editing over CRDTs."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[dependencies]
+tpt-vertex-collab.workspace = true

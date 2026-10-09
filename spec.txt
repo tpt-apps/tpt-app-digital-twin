@@ -1,0 +1,134 @@
+# TPT App — Digital Twin Workbench
+
+**Repository:** `tpt-app-digital-twin`  
+**Codename:** Twin  
+**License:** Dual MIT OR Apache-2.0  
+**Status:** Design  
+
+**Primary foundation crates used:**  
+`tpt-vertex` · `tpt-keystone-db` · `tpt-appfront` · `tpt-science` · `tpt-engineering` · `tpt-perception` · `tpt-control` · `tpt-math` · light use of `tpt-primitives`
+
+---
+
+## 1. Purpose & Vision
+
+A unified, offline-first desktop environment for designing, simulating, and collaborating on physical digital twins.
+
+It combines parametric CAD, real-time physics/simulation, sensor fusion, and multi-user CRDT collaboration into a single coherent tool that runs entirely on the user’s machine.
+
+Target users: robotics teams, open-hardware designers, research labs, small engineering firms, and anyone who currently juggles separate CAD + simulation + collaboration tools.
+
+The same codebase is released as open source (MIT OR Apache-2.0) and also packaged as convenient pre-built binaries sold on Gumroad.
+
+---
+
+## 2. Problem Statement
+
+Building and iterating on digital twins today usually requires:
+
+- One tool for parametric geometry (SolidWorks, Fusion, FreeCAD…)
+- Another for physics/simulation
+- Yet another for collaboration or versioning
+- Cloud services for real-time multi-user work
+
+This creates friction, data loss at tool boundaries, subscription costs, and weak offline capability. There is no polished, offline, memory-safe, all-in-one alternative.
+
+---
+
+## 3. Solution Overview
+
+| Capability                  | Source Repo(s)              | Role                                              |
+|-----------------------------|-----------------------------|---------------------------------------------------|
+| Parametric 3D CAD + CRDT    | tpt-vertex                  | Geometry modelling, real-time multi-user editing, Git-like versioning of geometry |
+| Local multi-engine storage  | tpt-keystone-db             | Twin state, simulation results, sensor history, version metadata |
+| UI                          | tpt-appfront                | Unified native desktop interface                  |
+| Physics & simulation        | tpt-science + tpt-engineering | Rigid-body, continuum, process, and control simulation |
+| Sensor fusion & perception  | tpt-perception              | Point clouds, SLAM-style registration, multi-sensor fusion |
+| Control & optimisation      | tpt-control + tpt-math      | Controllers, state estimation, trajectory helpers |
+| Shared primitives           | tpt-primitives              | Identity, capability, evidence                    |
+
+Users work with a single “Twin” document that contains geometry, physics parameters, sensor models, and simulation scenarios. Multiple users can edit the same twin over a local network via CRDTs with no cloud required.
+
+---
+
+## 4. Core Features
+
+### MVP (v1.0)
+
+- Parametric 3D modelling (Vertex core)
+- Real-time multi-user editing over LAN (CRDT)
+- Git-like branching / history of geometry and parameters
+- Basic rigid-body and simple continuum simulation
+- Local Keystone database for twin state and results
+- Sensor model attachment and basic fusion visualisation
+- Export / import of complete twin packages (signed + encrypted option)
+- Native desktop binaries (Windows, macOS, Linux)
+- Fully offline operation
+
+### Later versions (no commitment)
+
+- Richer physics solvers
+- Advanced perception pipelines
+- Controller design and hardware-in-the-loop helpers
+- Headless simulation server mode
+- Stronger formal claims on twin properties
+
+---
+
+## 5. Licensing & Dependency Rules
+
+- Application is dual-licensed MIT OR Apache-2.0.
+- All dependencies must be compatible with both MIT and Apache-2.0 (no Apache-only crates).
+- Foundation crates already under dual licence are used directly.
+
+---
+
+## 6. Security & Privacy Model
+
+- All data stays local by default.
+- Multi-user collaboration is LAN-only unless the user explicitly configures otherwise.
+- Twin packages can be encrypted on export.
+- No telemetry, no mandatory accounts, no phone-home.
+
+---
+
+## 7. Distribution Model
+
+1. **Open Source**  
+   Full source available under MIT OR Apache-2.0. Anyone can build it.
+
+2. **Gumroad**  
+   Pre-built, signed binaries + installer sold as a one-time purchase.  
+   No updates are promised.  
+   Purchasers may submit approved error reports that may be considered for a future major release.
+
+Buyers do not need to know the source is open.
+
+---
+
+## 8. Non-Goals (v1)
+
+- Cloud collaboration service
+- Full PLM / enterprise PDM replacement
+- Guaranteed ongoing updates or support
+- Mobile application
+- Every possible physics domain on day one
+
+---
+
+## 9. Success Criteria
+
+- A small team can collaboratively edit a twin over a local network without any cloud account
+- A complete twin (geometry + simulation setup + results) can be moved between machines cleanly
+- The application remains usable fully offline
+- Binary size and performance feel professional
+- The same codebase serves both open-source builders and Gumroad customers
+
+---
+
+## 10. Open Questions
+
+- Preferred real-time transport for LAN CRDT (QUIC, WebRTC data channels, custom)
+- How much simulation fidelity to include in the MVP vs leave for later
+- Exact format of the twin package file
+- Desktop shell choice (pure AppFront native vs thin Tauri wrapper)
