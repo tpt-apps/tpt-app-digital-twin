@@ -9,3 +9,5 @@ publish.workspace = true
 
 [dependencies]
 tpt-vertex-collab.workspace = true
+twin-core = { path = "../twin-core" }
+serde_json.workspace = true

@@ -9,6 +9,8 @@
 //! `damping_n_s_per_m` (≥ 0). Initial conditions come from the scenario:
 //! `position_m` and `velocity_m_s`.
 
+pub mod heat;
+
 use thiserror::Error;
 use tpt_sci_ode::{Method, OdeError, OdeProblemBuilder};
 use twin_core::{Scenario, Twin};
@@ -167,7 +169,7 @@ pub fn simulate(twin: &Twin, scenario: &Scenario, times: &[f64]) -> Result<Trace
     })
 }
 
-fn validate_times(times: &[f64], duration_s: f64) -> Result<(), SimError> {
+pub(crate) fn validate_times(times: &[f64], duration_s: f64) -> Result<(), SimError> {
     let mut prev = f64::NEG_INFINITY;
     for &t in times {
         if !t.is_finite() || t < 0.0 || t > duration_s || t <= prev {
@@ -334,5 +336,23 @@ mod tests {
             simulate(&twin, &sc, &[0.0, 1.0]),
             Err(SimError::MissingInitialCondition(VELOCITY0))
         );
+    }
+}
+#[cfg(test)]
+mod probe_tmp {
+    use super::*;
+    #[test]
+    fn probe() {
+        let mut t = Twin::new("p").unwrap();
+        t.set_parameter(MASS, 1.0).unwrap(); t.set_parameter(STIFFNESS, 4.0).unwrap(); t.set_parameter(DAMPING, 0.0).unwrap();
+        let mut ic = std::collections::BTreeMap::new();
+        ic.insert(POSITION0.to_string(), 1.0); ic.insert(VELOCITY0.to_string(), 0.0);
+        let sc = Scenario { name: "s".into(), duration_s: 10.0, initial_conditions: ic };
+        let times: Vec<f64> = (0..=50).map(|i| 10.0 * i as f64 / 50.0).collect();
+        let tr = simulate(&t, &sc, &times).unwrap();
+        let body = MassSpringDamper::from_twin(&t).unwrap();
+        let mut worst = (0.0, 0.0);
+        for (tt, s) in times.iter().zip(&tr.states) { let e = (s[0]-analytic_position(&body,1.0,0.0,*tt)).abs(); if e > worst.0 { worst = (e, *tt); } }
+        panic!("worst error {:e} at t={}", worst.0, worst.1);
     }
 }

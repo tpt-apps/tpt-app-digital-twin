@@ -40,7 +40,7 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [x] Confirm `tpt-keystone` and `tpt-vertex-collab` build on Windows as git deps (5m14s cold build; `default-features = false` keeps S3, OTLP, wasmtime and wgpu out)
 - [x] Confirm the Phase 4 crates build on Windows as git deps. `tpt-math-numeric`, `tpt-math-linalg-dense`, `tpt-engineering`, `tpt-sci-grid`, `tpt-sci-physics-rigid` pass. **`tpt-sci-ode` did not compile** at the pinned commit (cranelift version clash, `docs/ARCHITECTURE.md` finding 6). **Fixed locally:** vendored in `vendor/tpt-sci-ode` (cranelift 0.135, `finalize` API), tests pass
 - [x] Fix `tpt-sci-ode`: vendored with the fix (`vendor/tpt-sci-ode/VENDORED.md`). Upstream patch in `docs/upstream/tpt-sci-ode-cranelift.patch`, verified to apply to upstream master
-- [ ] Submit the `tpt-sci-ode` patch upstream. Waiting for your go-ahead, since it's a change to a repo you don't own yet (or confirm you maintain `tpt-science`)
+- [~] Submit the `tpt-sci-ode` patch upstream. **Prepared, not pushed.** Commit `6a4fa1c` (no co-author trailer, amended) is on local branch `fix/align-cranelift-0.135` in the scratch clone of `tpt-science`. PR text: `docs/upstream/PR_BODY.md`. Push and PR need GitHub auth, which this session doesn't have (`gh` not installed, no git credentials). Run `gh auth login`, then the push and `gh pr create` steps
 - [x] Licence: allow `Apache-2.0 WITH LLVM-exception` (cranelift crates) in `deny.toml`
 - [ ] Decide whether `tpt-sci-ode` stays vendored or moves to the git dep once upstream merges the fix
 - [x] LAN default binding: `sync_server` binds loopback by default. **Problem:** its default token is the hardcoded `dev`; Twin must not use that binary as-is (`docs/ARCHITECTURE.md` finding 6)
@@ -56,33 +56,34 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [x] Open / create / save / load / list / delete a twin in a local directory (`TwinStore::open`)
 - [x] Migration hook (`migrate` in `twin-core`). Only v1 exists, so it is a passthrough
 - [x] Unit tests: 8 in `twin-core` (round-trip, validation, NaN, schema refusal), 5 in `twin-store` against the real Keystone engine (including quoted names)
-- [ ] Geometry field (`Twin.geometry_ref`) is an opaque ID until Phase 2 defines what it points to
+- [x] Geometry field (`Twin.geometry_ref`) now holds the head commit ID of a `Design` (`Design::link_twin`)
 
 ## Phase 2 — Parametric geometry & history (`twin-geometry`)
 
-- [ ] Wrap `tpt-vertex`: primitives, sketches/features, parameters (§4). Not started. Needs a look at the `tpt-vertex-kernel` API
-- [ ] Parameter edits trigger a rebuild. Not started (depends on the kernel wrap)
+- [x] Wrap `tpt-vertex-kernel` (`twin_geometry::model`): `ModelSpec` of block, cylinder, boolean and translate steps whose dimensions are constants or named parameters; builds a kernel `FeatureTree`. Kernel has no named parameters, so this layer adds them. Not yet wrapped: revolve, sweep, loft, fillet, chamfer, rotation, free sketches, `tpt-vertex-versioning`
+- [x] Parameter edits trigger a rebuild: `Model::rebuild(params)` (unchanged on error); `geometry_hash()` is equal for equal parameters. Rebuilds the whole tree, no incremental cache. 8 tests
 - [x] Git-like history for parameters (`twin-geometry::History`): content-addressed commits (SHA-256), branches, switch, log, diff, and three-way merge that reports conflicts and applies nothing when there are any. 10 tests. **Geometry** history waits on the kernel wrap, using the same graph
-- [ ] Persist history in Keystone. Not started; `History` is in memory only
+- [x] Persist history in Keystone (serde_json now uses `float_roundtrip` workspace-wide, because the default parser can change an f64 by one ulp, which would change commit IDs): `History::to_json` / `from_json` (recomputes commit IDs, checks parents, branches and head, so tampering is refused) and `TwinStore::save_history` / `load_history` (table `histories`, removed with the twin). 5 new tests incl. reopen. Geometry snapshots wait on the kernel wrap
+- [x] Geometry in history: `Commit.geometry` (hash, part of the commit ID when present) and `twin_geometry::design::Design` (`ModelSpec` + `History`). `commit` and `merge` build the model first and record its hash, and refuse if the parameters don't build; `verify(commit)` rebuilds and compares. Stored with `TwinStore::save_design` / `load_design` (table `designs`). 6 + 1 tests. `Design::link_twin` copies the working parameters into a `Twin` and sets `geometry_ref` to the head commit ID; `is_linked` reports when the design has moved on
 - [x] Tests for branch and merge (three-way merge, same change on both sides, conflict, self-merge). Rebuild determinism waits on the kernel wrap
 
 ## Phase 3 — LAN collaboration (`twin-collab`)
 
-- [ ] Check what real-time sync `tpt-vertex` provides; if none, spike a transport (QUIC / WebSocket + Noise) and record the choice
-- [ ] Peer discovery on the LAN (e.g. mDNS)
-- [ ] Join / host a session; show peers
-- [ ] CRDT sync of geometry and parameters; offline edits converge on reconnect
-- [ ] LAN-only by default; an explicit opt-in setting for anything else (§6)
-- [ ] Encrypted and authenticated peers
-- [ ] Multi-process convergence test; a test for network partition and heal
+- [x] Check what real-time sync `tpt-vertex` provides: `tpt-vertex-collab` already has a CRDT, a `SyncHub` and a WebSocket server, so no new transport protocol was needed (see `docs/ARCHITECTURE.md`)
+- [ ] Peer discovery on the LAN (e.g. mDNS). Not started; no discovery until the opt-in LAN setting exists
+- [~] Join / host a session: `twin_collab::hub` runs sessions through `tpt-vertex-collab`'s `SyncHub` in-process. Only the owner hosts; joiners to an empty room are refused; viewers cannot edit; offline edits are kept and sent after reconnecting; an offline edit that loses to a newer write is reported by `Client::lost_on_reconnect`. Tested with 11 tests. **Not done:** showing peers (presence)
+- [~] CRDT sync of **parameters** (`twin-collab`): `TwinReplica` keeps an op log over `tpt-vertex-collab` LWW registers; `sync` / `pull` exchange logs in any order. Tested: different and same-parameter edits, repeated pulls, a partition with edits on both sides then heal, equal-clock tie-break by replica ID, three replicas. **Not done:** geometry (feature tree) sync; a network transport (the `SyncHub` in `tpt-vertex-collab`)
+- [~] LAN-only by default: `twin_collab::serve` binds loopback and refuses any other address unless `allow_lan` is passed (tested). **Not done:** the user-facing setting, and TLS, which LAN use needs
+- [~] Authenticated peers: tokens checked by the hub's `MemoryAuth`, with per-room grants. **Not done:** encryption, signed tokens or a persistent auth store (the in-memory table is for single-node use)
+- [x] Partition and heal, multi-process: `tests/multi_process.rs` runs the server as a child process (`twin_collab_serve`) and drives three peers over real sockets. A partition is a closed socket; offline edits are sent after reconnecting; all peers converge. Passed in 5 runs. **Not done:** peers on different machines, and an unreliable network (loss, reordering, delay)
 
 ## Phase 4 — Simulation (`twin-sim`)
 
 - [x] Scenario runner over `tpt-sci-ode`: `twin_sim::simulate(twin, scenario, times)` reads parameters from the Twin and returns a sampled trace
 - [ ] Rigid-body from twin geometry: **partial.** A 1-DOF mass-spring-damper runs from twin parameters (`mass_kg`, `stiffness_n_per_m`, `damping_n_s_per_m`). Multi-body dynamics from geometry is not built
-- [ ] Simple 1D/2D continuum solver (pick one: heat diffusion or beam deflection). Not started
+- [x] Simple 1D continuum solver: heat diffusion in a rod (`twin_sim::heat`), method of lines on `tpt-sci-ode`, zero-temperature ends. Checked against the closed-form sine-mode decay, grid-refinement convergence, and monotone decay; 7 tests. Uniform grid, Dirichlet ends only, explicit solver (stiff for very fine grids)
 - [x] Scenario definition: initial conditions (`position_m`, `velocity_m_s`), duration, sample times (validated: strictly increasing, within duration)
-- [ ] Results stored in Keystone and linked to the geometry version. Not started (needs Phase 2)
+- [x] Results stored in Keystone and linked to the geometry version. `TwinStore::run_scenario` simulates a scenario and saves it with the twin's `geometry_ref`; with a design it refuses (`StaleGeometry`) unless the twin is linked to the design's head. `run_is_current` flags runs made at an older commit. 3 tests. Runs are not saved automatically on parameter edits
 - [x] Deterministic runs (checked by a test); regression tests against closed-form solutions for undamped, under-, critically and over-damped cases (all within 1e-6)
 - [ ] Basic controller hook via `tpt-control` (optional for MVP). Not started
 - [ ] Wire `tpt-engineering` and `tpt-math` into the runner. Not started; the solver uses only `tpt-math-numeric`
@@ -90,9 +91,9 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 
 ## Phase 5 — Sensors & fusion (`twin-sensors`)
 
-- [ ] Sensor model types (e.g. camera, lidar, IMU) attachable to geometry
-- [ ] Synthetic data generation from simulation
-- [ ] Basic fusion via `tpt-perception`; point-cloud registration
+- [x] Sensor model types: IMU, camera and lidar, each with a mount pose and validated settings (`twin-sensors`, 5 tests). Stored per twin with `TwinStore::save_sensors` / `load_sensors` and included in exports. `Twin.sensor_refs` is not filled in yet; the sensor list is the source of truth
+- [~] Synthetic data generation from simulation: noise-free IMU readings from the mass-spring-damper (`twin_sensors::imu_from_trace`, sample times via `sample_times`). Camera and lidar output and noise models are not started
+- [~] Point-cloud registration via `tpt-perception` (ICP, point-to-point): `twin_sensors::register_point_clouds(source, target, prior, max_dist)`. Tested on an L-shape (known motion) and on lidar scans of a cube taken from a moving sensor (4 cm, 2°) with a prior. An identity start stalls on that motion (documented in the function). **Synthetic lidar:** `sample_surface` and `lidar_returns` (range-limited, sensor frame, no occlusion or beam pattern). **IMU prior:** `integrate_imu` double-integrates IMU acceleration (trapezoid rule, no drift correction); its translation feeds registration as the prior, tested against the simulated motion. **Not done:** rotation prior (no gyro model), so the IMU prior works only without yaw; sensor fusion beyond this (EKF/UKF from `tpt-perception` unused); point-to-plane ICP; occlusion and beam patterns in the lidar model. **`tpt-perception` is vendored** in `vendor/tpt-perception` (its `tpt-math` path dependencies can't resolve as a git dependency; see `VENDORED.md`)
 - [ ] Data for the visualisation layer
 - [ ] Sensor history stored in Keystone
 
@@ -100,11 +101,11 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 
 - [x] Spec the `.twin` container layout in `docs/PACKAGE_FORMAT.md`
 - [x] Manifest with versions and SHA-256 per entry, signed with Ed25519 (`twin-package`)
-- [ ] Export: geometry + simulation setup + results + Keystone snapshot. Export and import of the twin document and extra files work; geometry, results and the Keystone snapshot wait on Phases 2, 4 and a Keystone snapshot API
+- [~] Export: `TwinStore::export_twin` / `import_twin` write and read a signed (optionally encrypted) `.twin` with the twin, its design (`design.json`: model spec and history, geometry hashes included) and its stored runs (`runs/<n>.json`). **Not done:** the Keystone snapshot (no snapshot API in `tpt-keystone`); sensor history (Phase 5); the simulation setup is only the twin's scenarios, not a separate record
 - [x] ed25519 signing and verification. Import rejects bad signatures, unlisted entries, hash mismatches and unsafe paths
 - [x] Optional encryption on export: ChaCha20-Poly1305, key from Argon2id (`twin-package::encrypt`)
 - [x] Import integrity checks; clear errors on tamper, wrong key and version mismatch. 10 tests
-- [ ] Round-trip test between two machines / two directories (success criterion §9). Not done; the single-process test covers the format, not a real move
+- [~] Round-trip test: the store test exports from one store and imports into another in the same process (separate directories, separate keys, wrong-key and tamper rejection). **Not done:** a real move between two machines
 - [ ] **Open:** who signs a user's own export. The format needs a key the recipient trusts, and a vendor key isn't right for users (`docs/PACKAGE_FORMAT.md` open items)
 
 ## Phase 7 — Desktop app (`twin-app`)

@@ -61,3 +61,11 @@ Dependencies only point down this graph. `twin-core` depends on no foundation cr
 - Build the rest of the foundation crates (`tpt-science`, `tpt-math`, `tpt-appfront`, `tpt-engineering`, `tpt-perception`, `tpt-control`, `tpt-primitives`) as git deps. Only `tpt-vertex-collab` and `tpt-keystone` are verified on Windows.
 - macOS and Linux builds: not tested.
 - Viewport renderer choice (`glow` vs `wgpu` via egui callbacks). Needs a spike.
+
+## Recommendations for Phases 2 and 3 (2026-10-10)
+
+**Phase 2: geometry.** The kernel already has what Phase 2 asks for. `tpt-vertex-kernel` provides `FeatureTree` (`add`, `evaluate`) and `Sketch`. `tpt-vertex/versioning` provides a `Repository` with branches, checkout, merge base, fast-forward, merge and commit. Recommendation: wrap those two. Do not build a second geometry history. The `twin-geometry::History` written here is parameter-only, so it should either be retired or used only for parameter maps that have no feature-tree home. Before wiring, confirm that the `versioning` crate's merge works on feature trees, and that `versioning` builds as a git dependency. Its deps are `tpt-vertex-kernel`, `serde` and `sha2 0.10`, which look light.
+
+**Phase 3: collaboration.** Use the `tpt-vertex-collab` library: `CrdtDoc`, `LocalReplica`, and `SyncHub` with its authentication and access levels. Do not run the `sync_server` binary, because of its hardcoded `dev` token. Host the hub in-process, bind it to a LAN interface only when the user opts in, and give each session its own token. The next step is a spike with two in-process replicas that edit a shared feature tree and converge, including after a partition, before any networking. Peer discovery (mDNS) and TLS are separate steps after that.
+
+**Viewport (Phase 7).** `spikes/viewport` draws a 3D triangle with raw glow inside an egui paint callback, with a perspective MVP and egui panels around it. It compiles and runs for 10 seconds without a startup error. It has not been checked visually, and it has no orbit camera or mesh input. The result shows the custom-GPU path is viable. It is not yet a viewport.

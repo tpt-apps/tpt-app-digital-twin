@@ -11,6 +11,9 @@
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
+pub mod design;
+pub mod model;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -34,6 +37,8 @@ pub enum HistoryError {
     NoCommonAncestor,
     #[error("cannot merge `{0}` into itself")]
     SelfMerge(String),
+    #[error("stored history is invalid: {0}")]
+    Corrupt(String),
 }
 
 /// A commit ID: lowercase hex SHA-256.
@@ -59,6 +64,10 @@ pub struct Commit {
     pub parents: Vec<CommitId>,
     pub message: String,
     pub content: Content,
+    /// Hash of the geometry built from `content`, when the commit was made
+    /// with a model. Part of the commit ID when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub geometry: Option<String>,
 }
 
 /// One parameter that differs between two commits. `None` means absent.
@@ -82,7 +91,12 @@ pub struct History {
 impl History {
     /// Start a history on branch `main` with an initial commit.
     pub fn new(initial: Content, message: &str) -> Self {
-        let root = make_commit(Vec::new(), message, &initial);
+        Self::new_with(initial, message, None)
+    }
+
+    /// Like [`History::new`], also recording a geometry hash on the root commit.
+    pub fn new_with(initial: Content, message: &str, geometry: Option<String>) -> Self {
+        let root = make_commit(Vec::new(), message, &initial, geometry);
         let mut commits = BTreeMap::new();
         let id = root.id.clone();
         commits.insert(id.clone(), root);
@@ -94,6 +108,60 @@ impl History {
             head: "main".to_string(),
             working: initial,
         }
+    }
+
+    /// Serialise the whole history, including uncommitted working content.
+    pub fn to_json(&self) -> Result<String, HistoryError> {
+        serde_json::to_string(&Snapshot {
+            commits: self.commits.values().cloned().collect(),
+            branches: self.branches.clone(),
+            head: self.head.clone(),
+            working: self.working.clone(),
+        })
+        .map_err(|e| HistoryError::Corrupt(e.to_string()))
+    }
+
+    /// Load a history written by [`History::to_json`]. Commit IDs are
+    /// recomputed and parents, branches and head are checked, so a damaged or
+    /// tampered history is refused rather than trusted.
+    pub fn from_json(json: &str) -> Result<Self, HistoryError> {
+        let bad = |m: &str| HistoryError::Corrupt(m.to_string());
+        let snap: Snapshot = serde_json::from_str(json).map_err(|e| bad(&e.to_string()))?;
+        let mut commits = BTreeMap::new();
+        for c in snap.commits {
+            let expected = make_commit(
+                c.parents.clone(),
+                &c.message,
+                &c.content,
+                c.geometry.clone(),
+            );
+            if expected.id != c.id {
+                return Err(bad("commit id does not match its content"));
+            }
+            commits.insert(c.id.clone(), c);
+        }
+        for c in commits.values() {
+            if c.parents.iter().any(|p| !commits.contains_key(p)) {
+                return Err(bad("commit refers to a missing parent"));
+            }
+        }
+        if snap.branches.is_empty() || snap.branches.values().any(|t| !commits.contains_key(t)) {
+            return Err(bad("branch points at a missing commit"));
+        }
+        if !snap.branches.contains_key(&snap.head) {
+            return Err(bad("head is not a branch"));
+        }
+        Ok(Self {
+            commits,
+            branches: snap.branches,
+            head: snap.head,
+            working: snap.working,
+        })
+    }
+
+    /// The commit at the tip of the current branch.
+    pub fn head_commit(&self) -> &CommitId {
+        self.tip()
     }
 
     pub fn head_branch(&self) -> &str {
@@ -125,11 +193,20 @@ impl History {
 
     /// Record the working content on the current branch.
     pub fn commit_changes(&mut self, message: &str) -> Result<CommitId, HistoryError> {
+        self.commit_changes_with(message, None)
+    }
+
+    /// Like [`History::commit_changes`], also recording a geometry hash.
+    pub fn commit_changes_with(
+        &mut self,
+        message: &str,
+        geometry: Option<String>,
+    ) -> Result<CommitId, HistoryError> {
         let parent = self.tip().clone();
         if self.commits[&parent].content == self.working {
             return Err(HistoryError::NothingToCommit(self.head.clone()));
         }
-        let commit = make_commit(vec![parent], message, &self.working);
+        let commit = make_commit(vec![parent], message, &self.working, geometry);
         let id = commit.id.clone();
         self.commits.insert(id.clone(), commit);
         self.branches.insert(self.head.clone(), id.clone());
@@ -183,8 +260,19 @@ impl History {
     /// Three-way: a key changed on one side only takes that side's value. A key
     /// changed differently on both sides is a conflict, and nothing is merged.
     pub fn merge(&mut self, from: &str, message: &str) -> Result<CommitId, HistoryError> {
+        self.merge_with(from, message, |_| Ok(None))
+    }
+
+    /// Like [`History::merge`]. `geometry` receives the merged content and
+    /// returns the geometry hash to record. If it fails, nothing is merged.
+    pub fn merge_with<E: From<HistoryError>>(
+        &mut self,
+        from: &str,
+        message: &str,
+        geometry: impl FnOnce(&Content) -> Result<Option<String>, E>,
+    ) -> Result<CommitId, E> {
         if from == self.head {
-            return Err(HistoryError::SelfMerge(from.to_string()));
+            return Err(HistoryError::SelfMerge(from.to_string()).into());
         }
         let ours = self.tip().clone();
         let theirs = self
@@ -225,10 +313,10 @@ impl History {
             }
         }
         if !conflicts.is_empty() {
-            return Err(HistoryError::Conflict(conflicts));
+            return Err(HistoryError::Conflict(conflicts).into());
         }
 
-        let commit = make_commit(vec![ours, theirs], message, &merged);
+        let commit = make_commit(vec![ours, theirs], message, &merged, geometry(&merged)?);
         let id = commit.id.clone();
         self.commits.insert(id.clone(), commit);
         self.branches.insert(self.head.clone(), id.clone());
@@ -280,18 +368,34 @@ fn diff_content(before: &Content, after: &Content) -> Vec<Change> {
         .collect()
 }
 
-fn make_commit(parents: Vec<CommitId>, message: &str, content: &Content) -> Commit {
+#[derive(Serialize, Deserialize)]
+struct Snapshot {
+    commits: Vec<Commit>,
+    branches: BTreeMap<String, CommitId>,
+    head: String,
+    working: Content,
+}
+
+fn make_commit(
+    parents: Vec<CommitId>,
+    message: &str,
+    content: &Content,
+    geometry: Option<String>,
+) -> Commit {
     // Hash the canonical JSON of the parts that define the commit.
     #[derive(Serialize)]
     struct Body<'a> {
         parents: &'a [CommitId],
         message: &'a str,
         content: &'a Content,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        geometry: &'a Option<String>,
     }
     let body = serde_json::to_vec(&Body {
         parents: &parents,
         message,
         content,
+        geometry: &geometry,
     })
     .expect("commit body is always serialisable");
     let digest = Sha256::digest(&body);
@@ -301,6 +405,7 @@ fn make_commit(parents: Vec<CommitId>, message: &str, content: &Content) -> Comm
         parents,
         message: message.to_string(),
         content: content.clone(),
+        geometry,
     }
 }
 
@@ -457,5 +562,44 @@ mod tests {
             h.switch("nope"),
             Err(HistoryError::NoSuchBranch("nope".into()))
         );
+    }
+
+    #[test]
+    fn json_round_trip_keeps_everything() {
+        let mut h = base();
+        h.set("width", 12.0);
+        h.commit_changes("wider").unwrap();
+        h.create_branch("exp").unwrap();
+        h.switch("exp").unwrap();
+        h.set("height", 9.0); // uncommitted
+        let back = History::from_json(&h.to_json().unwrap()).unwrap();
+        assert_eq!(back, h);
+    }
+
+    #[test]
+    fn tampered_history_is_refused() {
+        let mut h = base();
+        h.set("width", 12.0);
+        h.commit_changes("wider").unwrap();
+        let json = h.to_json().unwrap().replace("\"wider\"", "\"narrower\"");
+        assert!(matches!(
+            History::from_json(&json),
+            Err(HistoryError::Corrupt(_))
+        ));
+        assert!(History::from_json("not json").is_err());
+    }
+
+    #[test]
+    fn dangling_branch_or_head_is_refused() {
+        let h = base();
+        let json = h.to_json().unwrap();
+        let bad_head = json.replace("\"head\":\"main\"", "\"head\":\"gone\"");
+        assert!(History::from_json(&bad_head).is_err());
+        let id = h.branches().next().unwrap().1.as_str().to_string();
+        let bad_tip = json.replace(
+            &format!("\"main\":\"{id}\""),
+            &format!("\"main\":\"{}\"", "0".repeat(64)),
+        );
+        assert!(History::from_json(&bad_tip).is_err());
     }
 }

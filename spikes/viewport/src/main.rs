@@ -204,7 +204,8 @@ impl eframe::App for ViewportApp {
             let callback = egui_glow::CallbackFn::new(move |info, painter| {
                 let Some(scene) = *scene.lock() else { return };
                 let gl = painter.gl();
-                let [x, y, w, h] = info.viewport_in_pixels().from_bottom_px();
+                let vp = info.viewport_in_pixels();
+                let (x, y, w, h) = (vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px);
                 unsafe {
                     gl.viewport(x, y, w, h);
                     gl.use_program(Some(scene.program));

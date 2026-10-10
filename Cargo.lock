@@ -2649,12 +2649,93 @@ dependencies = [
 ]
 
 [[package]]
+name = "tpt-math-geometry"
+version = "0.1.1"
+source = "git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279#2b86a62c6f323d06c715c862304ae064f153c279"
+dependencies = [
+ "tpt-math-linalg-fixed",
+ "tpt-math-numeric 0.1.0 (git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279)",
+]
+
+[[package]]
+name = "tpt-math-linalg-dense"
+version = "0.1.0"
+source = "git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279#2b86a62c6f323d06c715c862304ae064f153c279"
+dependencies = [
+ "tpt-math-numeric 0.1.0 (git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279)",
+]
+
+[[package]]
+name = "tpt-math-linalg-fixed"
+version = "0.1.0"
+source = "git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279#2b86a62c6f323d06c715c862304ae064f153c279"
+dependencies = [
+ "tpt-math-numeric 0.1.0 (git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279)",
+]
+
+[[package]]
 name = "tpt-math-numeric"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3cf48d7c841b2a882d06426b67f732a79e0b248d103ff8c1f6d2fdf1ab3df87b"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "tpt-math-numeric"
+version = "0.1.0"
+source = "git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279#2b86a62c6f323d06c715c862304ae064f153c279"
+dependencies = [
+ "num-traits",
+]
+
+[[package]]
+name = "tpt-math-units"
+version = "0.1.0"
+source = "git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279#2b86a62c6f323d06c715c862304ae064f153c279"
+dependencies = [
+ "num-traits",
+ "uom",
+]
+
+[[package]]
+name = "tpt-percept-cloud"
+version = "0.1.0"
+dependencies = [
+ "tpt-math-numeric 0.1.0 (git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279)",
+ "tpt-percept-core",
+]
+
+[[package]]
+name = "tpt-percept-core"
+version = "0.1.0"
+dependencies = [
+ "tpt-math-geometry",
+ "tpt-math-linalg-fixed",
+ "tpt-math-numeric 0.1.0 (git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279)",
+ "tpt-math-units",
+]
+
+[[package]]
+name = "tpt-percept-features"
+version = "0.1.0"
+dependencies = [
+ "tpt-math-linalg-fixed",
+ "tpt-math-numeric 0.1.0 (git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279)",
+ "tpt-percept-cloud",
+ "tpt-percept-core",
+]
+
+[[package]]
+name = "tpt-percept-register"
+version = "0.1.0"
+dependencies = [
+ "tpt-math-linalg-dense",
+ "tpt-math-numeric 0.1.0 (git+https://github.com/TPT-Solutions/tpt-math?rev=2b86a62c6f323d06c715c862304ae064f153c279)",
+ "tpt-percept-cloud",
+ "tpt-percept-core",
+ "tpt-percept-features",
 ]
 
 [[package]]
@@ -2671,7 +2752,7 @@ dependencies = [
  "diffsol",
  "target-lexicon",
  "thiserror 2.0.21",
- "tpt-math-numeric",
+ "tpt-math-numeric 0.1.0 (registry+https://github.com/rust-lang/crates.io-index)",
 ]
 
 [[package]]
@@ -2758,7 +2839,9 @@ version = "0.1.0"
 name = "twin-collab"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "tpt-vertex-collab",
+ "twin-core",
 ]
 
 [[package]]
@@ -2779,6 +2862,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "thiserror 2.0.21",
+ "tpt-vertex-kernel",
  "twin-core",
 ]
 
@@ -2812,6 +2896,15 @@ dependencies = [
 [[package]]
 name = "twin-sensors"
 version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+ "tpt-percept-cloud",
+ "tpt-percept-register",
+ "twin-core",
+ "twin-sim",
+]
 
 [[package]]
 name = "twin-sim"
@@ -2827,10 +2920,17 @@ name = "twin-store"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "ed25519-dalek",
+ "serde",
+ "serde_json",
  "tempfile",
  "thiserror 2.0.21",
  "tpt-keystone",
  "twin-core",
+ "twin-geometry",
+ "twin-package",
+ "twin-sensors",
+ "twin-sim",
 ]
 
 [[package]]
@@ -2866,6 +2966,16 @@ name = "untrusted"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
+
+[[package]]
+name = "uom"
+version = "0.38.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a739f83872836c82a4f2527d4e54b37007b3de68cafe7edde95fd695968bf4b9"
+dependencies = [
+ "num-traits",
+ "typenum",
+]
 
 [[package]]
 name = "uuid"

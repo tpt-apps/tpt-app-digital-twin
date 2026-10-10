@@ -10,8 +10,15 @@ publish.workspace = true
 [dependencies]
 anyhow.workspace = true
 thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 tpt-keystone.workspace = true
 twin-core = { path = "../twin-core" }
+twin-geometry = { path = "../twin-geometry" }
+twin-sim = { path = "../twin-sim" }
+twin-sensors = { path = "../twin-sensors" }
+twin-package = { path = "../twin-package" }
+ed25519-dalek.workspace = true
 
 [dev-dependencies]
 tempfile = "3"

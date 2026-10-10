@@ -1,5 +1,7 @@
 [workspace]
 resolver = "2"
+# Vendored crates keep their own workspace (tpt-perception inherits from it).
+exclude = ["vendor/tpt-perception"]
 members = [
     "crates/twin-core",
     "crates/twin-store",
@@ -22,7 +24,7 @@ publish = false
 
 [workspace.dependencies]
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["float_roundtrip"] }  # exact f64 round trips, needed for stable commit IDs
 thiserror = "2"
 anyhow = "1"
 uuid = { version = "1", features = ["v4", "serde"] }
@@ -38,7 +40,12 @@ getrandom = "0.3"
 # TPT-Solutions foundation crates, pinned to master on 2026-10-10 (see docs/ARCHITECTURE.md).
 # Only the crates Twin uses so far. Others are added when a crate needs them.
 tpt-vertex-collab = { git = "https://github.com/TPT-Solutions/tpt-vertex", rev = "898e6efd4befd9a9405d791d4d83570f8fe49a98", default-features = false }
+tpt-vertex-kernel = { git = "https://github.com/TPT-Solutions/tpt-vertex", rev = "898e6efd4befd9a9405d791d4d83570f8fe49a98" }
 tpt-keystone = { git = "https://github.com/TPT-Solutions/tpt-keystone-db", rev = "b861edd6f01e08061e0e1f3a86e6a2a1e1f2f449", default-features = false }
+
+# Vendored tpt-perception (its tpt-math deps rewritten to git). See vendor/tpt-perception/VENDORED.md.
+tpt-percept-cloud = { path = "vendor/tpt-perception/crates/tpt-percept-cloud" }
+tpt-percept-register = { path = "vendor/tpt-perception/crates/tpt-percept-register" }
 
 # Patched copy of tpt-sci-ode (cranelift version fix). See vendor/tpt-sci-ode/VENDORED.md.
 tpt-sci-ode = { path = "vendor/tpt-sci-ode" }
