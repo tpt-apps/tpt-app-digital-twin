@@ -35,7 +35,7 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [x] Clone and audit the foundation crates: `tpt-vertex`, `tpt-keystone-db`, `tpt-appfront`, `tpt-science`, `tpt-engineering`, `tpt-perception`, `tpt-control`, `tpt-math`, `tpt-primitives` (all exist, all MIT OR Apache-2.0)
 - [x] Record their public APIs and gaps in `docs/ARCHITECTURE.md`
 - [x] Pin the git dependencies by `rev` (in `Cargo.toml` comments; not yet in `[workspace.dependencies]`, because nothing consumes them yet, and they must compile first)
-- [x] Licence check: `deny.toml` added, `cargo deny check licenses` passes; CI job added (not yet run on GitHub)
+- [x] Licence check: `deny.toml` added, `cargo deny check licenses` passes (before the Phase 7 shell; see the shell item for the current failure)
 - [x] README with build instructions
 - [x] Confirm `tpt-keystone` and `tpt-vertex-collab` build on Windows as git deps (5m14s cold build; `default-features = false` keeps S3, OTLP, wasmtime and wgpu out)
 - [x] Confirm the Phase 4 crates build on Windows as git deps. `tpt-math-numeric`, `tpt-math-linalg-dense`, `tpt-engineering`, `tpt-sci-grid`, `tpt-sci-physics-rigid` pass. **`tpt-sci-ode` did not compile** at the pinned commit (cranelift version clash, `docs/ARCHITECTURE.md` finding 6). **Fixed locally:** vendored in `vendor/tpt-sci-ode` (cranelift 0.135, `finalize` API), tests pass
@@ -95,7 +95,7 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [~] Synthetic data generation from simulation: noise-free IMU readings from the mass-spring-damper (`twin_sensors::imu_from_trace`, sample times via `sample_times`). Camera and lidar output and noise models are not started
 - [~] Point-cloud registration via `tpt-perception` (ICP, point-to-point): `twin_sensors::register_point_clouds(source, target, prior, max_dist)`. Tested on an L-shape (known motion) and on lidar scans of a cube taken from a moving sensor (4 cm, 2°) with a prior. An identity start stalls on that motion (documented in the function). **Synthetic lidar:** `sample_surface` and `lidar_returns` (range-limited, sensor frame, no occlusion or beam pattern). **IMU prior:** `integrate_imu` double-integrates IMU acceleration (trapezoid rule, no drift correction); its translation feeds registration as the prior, tested against the simulated motion. **Not done:** rotation prior (no gyro model), so the IMU prior works only without yaw; sensor fusion beyond this (EKF/UKF from `tpt-perception` unused); point-to-plane ICP; occlusion and beam patterns in the lidar model. **`tpt-perception` is vendored** in `vendor/tpt-perception` (its `tpt-math` path dependencies can't resolve as a git dependency; see `VENDORED.md`)
 - [ ] Data for the visualisation layer
-- [ ] Sensor history stored in Keystone
+- [~] Sensor history stored in Keystone: `TwinStore::save_recording` / `load_recording` (table `sensor_readings`, one recording per twin and sensor, validated, removed with the twin; 1 test). **Not done:** saving readings from a scenario run automatically, and including recordings in the `.twin` export
 
 ## Phase 6 — Package export / import (`twin-package`)
 
@@ -110,12 +110,13 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 
 ## Phase 7 — Desktop app (`twin-app`)
 
-- [ ] `tpt-appfront` shell: window, menus, project open/save
+- [~] `tpt-appfront` shell: window and project open/save. `twin-app` uses `tpt-appfront-canvas` (egui + glow), pinned to `61465269` and building on Windows. `twin_app::Project` owns the store, twin list and open twin, with 5 tests; `main.rs` is a view over it with New, Save and Open buttons. **Not done:** menus, a native folder picker, and the rebuild and results views (parameter editing is now in the window). Licences resolved: BSL-1.0 (clipboard crates), OFL-1.1 and Ubuntu-font-1.0 (bundled egui fonts) are on the allow list in `deny.toml`, and `cargo deny check licenses` passes. The Ubuntu Font review stays open under Phase 8
+- [x] Window theme: light palette, rounded controls, card sections, scrolling (`crates/twin-app/src/theme.rs`). Checked by screenshot. **Limitation:** the canvas has no root scrolling and lays out to the height it is given, so the content sits in a fixed 2400 px scroll region (blank space below short content). Proper fix: auto-height root in `tpt-appfront-canvas` (upstream)
 - [ ] 3D viewport with orbit / pan / zoom and selection
-- [ ] Parameter panel and feature tree
-- [ ] History panel (branches, commits, diff)
+- [~] Parameter panel and feature tree: **parameter panel done.** Each parameter of the open twin has an editable field; numbers apply at once (not saved until Save), and text that is not a number is refused and blocks Save (`Project::edit_parameter`, 1 test). **Not done:** the feature tree, and field-level validation ranges
+- [~] History panel (branches, commits, diff): **parameter history done.** Start history, commit the saved parameters, create and switch branches, see the log and the head commit's changes (`Project` history methods, 1 test). Commit and switch are refused while the twin has unsaved edits. **Not done:** merge, diff between any two commits, and geometry history (the design is not yet wired into the app)
 - [ ] Collaboration panel (peers, join/host)
-- [ ] Simulation panel (set up, run, view results)
+- [~] Simulation panel (set up, run, view results): **run and summary done.** Add an example mass-spring-damper model and scenario, run a scenario of a saved twin (stored as a run), and see a summary of the latest run (`Project::run_scenario` / `run_summary`, 1 test). **Not done:** scenario editing (duration, initial conditions), plots, and a stale-run flag when parameters change after a run
 - [ ] Sensor panel and fusion visualisation
 - [ ] Export / import dialogs, including encryption options
 - [ ] Settings: network mode, data location. Nothing leaves the machine by default
@@ -131,6 +132,7 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [ ] Code signing and installers
 - [ ] Zip bundle: binaries + licence + quick-start guide (PDF) + examples (`GUMROAD.md`)
 - [ ] `SHA256SUMS`
+- [ ] Review the Ubuntu Font Licence (bundled egui font, allowed in `deny.toml`) before v1.0. Unmodified fonts only
 - [ ] Gumroad listing check against `GUMROAD.md` (price $349, 14-day refund)
 - [ ] Doc for submitting error reports
 

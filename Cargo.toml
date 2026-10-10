@@ -47,6 +47,10 @@ tpt-keystone = { git = "https://github.com/TPT-Solutions/tpt-keystone-db", rev =
 tpt-percept-cloud = { path = "vendor/tpt-perception/crates/tpt-percept-cloud" }
 tpt-percept-register = { path = "vendor/tpt-perception/crates/tpt-percept-register" }
 
+# Desktop shell (tpt-appfront): canvas backend is egui + glow.
+tpt-appfront-core = { git = "https://github.com/TPT-Solutions/tpt-appfront", rev = "61465269be731aaf4babf6cd3ec87ecf664d7397" }
+tpt-appfront-canvas = { git = "https://github.com/TPT-Solutions/tpt-appfront", rev = "61465269be731aaf4babf6cd3ec87ecf664d7397" }
+
 # Patched copy of tpt-sci-ode (cranelift version fix). See vendor/tpt-sci-ode/VENDORED.md.
 tpt-sci-ode = { path = "vendor/tpt-sci-ode" }
 

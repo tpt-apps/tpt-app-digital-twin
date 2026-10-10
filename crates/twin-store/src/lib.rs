@@ -27,6 +27,7 @@ const HISTORY_TABLE: &str = "histories";
 const DESIGN_TABLE: &str = "designs";
 const RUN_TABLE: &str = "runs";
 const SENSOR_TABLE: &str = "sensors";
+const READING_TABLE: &str = "sensor_readings";
 
 #[derive(Debug, Error)]
 pub enum StoreError {
@@ -46,6 +47,8 @@ pub enum StoreError {
     NoScenario(String),
     #[error("sensor list is invalid: {0}")]
     Sensor(String),
+    #[error("sensor recording is invalid: {0}")]
+    Recording(String),
     #[error("no twin with id {0}")]
     NotFound(TwinId),
     #[error(transparent)]
@@ -67,6 +70,55 @@ pub struct StoredRun {
     pub geometry_ref: Option<String>,
     pub times: Vec<f64>,
     pub states: Vec<[f64; 2]>,
+}
+
+/// Recorded output of one sensor of a twin over time, e.g. IMU readings from a
+/// scenario. Each row of `samples` holds one value per channel, in the order of
+/// `channels`, at the matching entry of `times_s`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SensorRecording {
+    pub sensor: String,
+    pub channels: Vec<String>,
+    pub times_s: Vec<f64>,
+    pub samples: Vec<Vec<f64>>,
+}
+
+impl SensorRecording {
+    /// Check the shape and values: at least one channel with a unique non-empty
+    /// name, strictly increasing finite times, and one finite value per channel
+    /// in every sample.
+    pub fn validated(self) -> Result<Self, StoreError> {
+        let fail = |msg: &str| Err(StoreError::Recording(format!("{}: {msg}", self.sensor)));
+        if self.sensor.trim().is_empty() {
+            return Err(StoreError::Recording("sensor name is empty".into()));
+        }
+        if self.channels.is_empty() {
+            return fail("no channels");
+        }
+        for (i, name) in self.channels.iter().enumerate() {
+            if name.trim().is_empty() || self.channels[..i].contains(name) {
+                return fail("channel names must be unique and non-empty");
+            }
+        }
+        if self.samples.len() != self.times_s.len() {
+            return fail("sample count does not match time count");
+        }
+        if self.times_s.iter().any(|t| !t.is_finite()) {
+            return fail("times must be finite");
+        }
+        if self.times_s.windows(2).any(|w| w[1] <= w[0]) {
+            return fail("times must be strictly increasing");
+        }
+        for row in &self.samples {
+            if row.len() != self.channels.len() {
+                return fail("sample width does not match channel count");
+            }
+            if row.iter().any(|v| !v.is_finite()) {
+                return fail("sample values must be finite");
+            }
+        }
+        Ok(self)
+    }
 }
 
 const DESIGN_ENTRY: &str = "design.json";
@@ -140,6 +192,13 @@ impl TwinStore {
             db.clone(),
         )
         .map_err(db_err)?;
+        execute_query(
+            &format!(
+                "CREATE TABLE IF NOT EXISTS {READING_TABLE} (id TEXT PRIMARY KEY, twin_id TEXT, doc TEXT)"
+            ),
+            db.clone(),
+        )
+        .map_err(db_err)?;
         Ok(Self { db })
     }
 
@@ -197,6 +256,10 @@ impl TwinStore {
         self.run(&format!(
             "DELETE FROM {SENSOR_TABLE} WHERE id = {}",
             sql_text(&id.to_string())
+        ))?;
+        self.run(&format!(
+            "DELETE FROM {READING_TABLE} WHERE twin_id = {}",
+            sql_text(&id.to_string())
         ))
     }
 
@@ -236,6 +299,41 @@ impl TwinStore {
                 }
                 Ok(sensors)
             }
+        }
+    }
+
+    /// Store the recording of one sensor of `twin`. A recording of the same
+    /// sensor replaces the previous one. The recording is validated first.
+    pub fn save_recording(
+        &self,
+        twin: TwinId,
+        recording: &SensorRecording,
+    ) -> Result<(), StoreError> {
+        let recording = recording.clone().validated()?;
+        let key = sql_text(&reading_key(twin, &recording.sensor));
+        let twin_id = sql_text(&twin.to_string());
+        let doc = sql_text(&serde_json::to_string(&recording).expect("recording is serialisable"));
+        self.run(&format!("DELETE FROM {READING_TABLE} WHERE id = {key}"))?;
+        self.run(&format!(
+            "INSERT INTO {READING_TABLE} (id, twin_id, doc) VALUES ({key}, {twin_id}, {doc})"
+        ))
+    }
+
+    /// The recording of `sensor` for `twin`, or `None` if there is none.
+    pub fn load_recording(
+        &self,
+        twin: TwinId,
+        sensor: &str,
+    ) -> Result<Option<SensorRecording>, StoreError> {
+        let rows = self.query(&format!(
+            "SELECT doc FROM {READING_TABLE} WHERE id = {}",
+            sql_text(&reading_key(twin, sensor))
+        ))?;
+        match rows.first() {
+            None => Ok(None),
+            Some(json) => serde_json::from_str(json)
+                .map(Some)
+                .map_err(|e| StoreError::Recording(format!("stored recording is invalid: {e}"))),
         }
     }
 
@@ -471,6 +569,10 @@ impl TwinStore {
 
 fn run_key(twin: TwinId, scenario: &str) -> String {
     format!("{twin}/{scenario}")
+}
+
+fn reading_key(twin: TwinId, sensor: &str) -> String {
+    format!("{twin}/{sensor}")
 }
 
 /// Quote a value as a SQL string literal, doubling embedded single quotes.
@@ -869,6 +971,76 @@ mod tests {
 
         store.delete(twin.id).unwrap();
         assert!(store.load_sensors(twin.id).unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    fn recording(sensor: &str, times: Vec<f64>, samples: Vec<Vec<f64>>) -> SensorRecording {
+        SensorRecording {
+            sensor: sensor.into(),
+            channels: vec!["accel_m_s2".into()],
+            times_s: times,
+            samples,
+        }
+    }
+
+    #[test]
+    fn sensor_recordings_are_stored_replaced_validated_and_removed_with_the_twin() {
+        let dir = temp_dir("readings");
+        let store = TwinStore::open(&dir).unwrap();
+        let twin = Twin::new("recorded").unwrap();
+        store.save(&twin).unwrap();
+        assert_eq!(store.load_recording(twin.id, "imu").unwrap(), None);
+
+        let first = recording("imu", vec![0.0, 0.1], vec![vec![1.0], vec![2.0]]);
+        store.save_recording(twin.id, &first).unwrap();
+        assert_eq!(
+            store.load_recording(twin.id, "imu").unwrap(),
+            Some(first.clone())
+        );
+
+        // Saving the same sensor again replaces the earlier recording.
+        let second = recording("imu", vec![0.0, 0.2, 0.4], vec![vec![0.5]; 3]);
+        store.save_recording(twin.id, &second).unwrap();
+        assert_eq!(store.load_recording(twin.id, "imu").unwrap(), Some(second));
+
+        // Invalid shapes and values are refused and leave the stored copy alone.
+        let bad = [
+            recording("imu", vec![0.0, 0.0], vec![vec![1.0], vec![1.0]]),
+            recording("imu", vec![0.0, 1.0], vec![vec![1.0]]),
+            recording("imu", vec![0.0], vec![vec![f64::NAN]]),
+            recording("imu", vec![0.0], vec![vec![1.0, 2.0]]),
+            recording("", vec![0.0], vec![vec![1.0]]),
+            SensorRecording {
+                sensor: "imu".into(),
+                channels: vec!["a".into(), "a".into()],
+                times_s: vec![0.0],
+                samples: vec![vec![1.0, 2.0]],
+            },
+        ];
+        for r in &bad {
+            assert!(matches!(
+                store.save_recording(twin.id, r),
+                Err(StoreError::Recording(_))
+            ));
+        }
+        assert_eq!(
+            store
+                .load_recording(twin.id, "imu")
+                .unwrap()
+                .unwrap()
+                .times_s
+                .len(),
+            3
+        );
+
+        // Recordings of other sensors are kept separate, and go with the twin.
+        store
+            .save_recording(twin.id, &recording("lidar", vec![0.0], vec![vec![3.0]]))
+            .unwrap();
+        assert!(store.load_recording(twin.id, "lidar").unwrap().is_some());
+        store.delete(twin.id).unwrap();
+        assert_eq!(store.load_recording(twin.id, "imu").unwrap(), None);
+        assert_eq!(store.load_recording(twin.id, "lidar").unwrap(), None);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

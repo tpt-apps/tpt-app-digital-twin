@@ -8,3 +8,11 @@ repository.workspace = true
 publish.workspace = true
 
 [dependencies]
+tpt-appfront-core.workspace = true
+tpt-appfront-canvas.workspace = true
+eframe = { version = "0.35", default-features = false }
+egui = "0.35"
+twin-core = { path = "../twin-core" }
+twin-geometry = { path = "../twin-geometry" }
+twin-store = { path = "../twin-store" }
+thiserror.workspace = true

@@ -12,6 +12,14 @@ allow = [
     "ISC",
     "Zlib",
     "Apache-2.0 WITH LLVM-exception",
+    # Permissive, OSI-approved. Used by clipboard-win and error-code (desktop shell).
+    "BSL-1.0",
+    # OSI-approved font licence. Used by egui's bundled icon font (desktop shell).
+    "OFL-1.1",
+    # Ubuntu Font Licence 1.0, used by egui's bundled UI font. Permits
+    # redistribution; restricts only modified fonts, which we do not ship.
+    # Review before v1.0 (TODO.md, Phase 8 licence items).
+    "Ubuntu-font-1.0",
 ]
 confidence-threshold = 0.9
 
