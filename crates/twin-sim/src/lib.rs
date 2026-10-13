@@ -13,6 +13,7 @@
 //! controller adds one state (the integral of the error) to the same solver.
 
 pub mod heat;
+pub mod rigid;
 
 use thiserror::Error;
 use tpt_sci_ode::{Method, OdeError, OdeProblemBuilder};

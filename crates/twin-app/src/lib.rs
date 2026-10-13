@@ -20,8 +20,12 @@ use twin_geometry::Content;
 
 pub mod view3d;
 use twin_geometry::design::{Design, DesignError};
+use twin_geometry::mass::{MassProperties, mass_properties};
 use twin_geometry::model::{ModelSpec, Step, Value};
 use twin_geometry::{Change, CommitId, History, HistoryError};
+
+/// Twin parameter holding the density (kg/m³) of the design's solid.
+pub const DENSITY: &str = "density_kg_m3";
 use twin_license::{License, LicenseVerifier};
 use twin_package::PackageError;
 use twin_sensors::{Mount, Sensor, SensorKind};
@@ -1025,6 +1029,15 @@ impl Project {
     pub fn view_triangles(&self) -> Option<Vec<view3d::Triangle>> {
         let design = self.design.as_ref()?;
         design.preview().ok().map(|model| model.triangles())
+    }
+
+    /// Mass properties of the whole design treated as one solid body, with
+    /// the density from the twin's `density_kg_m3` parameter. `None` if there
+    /// is no design, no density, or the parameters do not build.
+    pub fn body_properties(&self) -> Option<MassProperties> {
+        let density = *self.current.as_ref()?.parameters.get(DENSITY)?;
+        let triangles = self.view_triangles()?;
+        mass_properties(&triangles, density)
     }
 
     /// One line on the design: its head commit, and whether the open twin is
@@ -2642,6 +2655,23 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("condition not reached in time");
+    }
+
+    #[test]
+    fn the_design_is_a_body_with_mass_from_its_density() {
+        let dir = temp_dir("body");
+        let mut p = Project::open(&dir).unwrap();
+        p.new_twin("arm").unwrap();
+        p.save().unwrap();
+        p.start_design().unwrap();
+        // Without a density there is no body.
+        assert!(p.body_properties().is_none());
+
+        p.set_parameter(DENSITY, 1000.0).unwrap();
+        // The starting design is a 2 x 1 x 1 block.
+        let body = p.body_properties().unwrap();
+        assert!((body.mass - 2000.0).abs() < 1e-9);
+        assert!((body.inertia[0][0] - 2000.0 * 2.0 / 12.0).abs() < 1e-6);
     }
 
     #[test]

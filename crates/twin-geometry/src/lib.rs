@@ -12,6 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 pub mod design;
+pub mod mass;
 pub mod model;
 
 use serde::{Deserialize, Serialize};
