@@ -17,6 +17,8 @@ use twin_collab::TwinReplica;
 use twin_collab::sync::{SyncClient, SyncHost};
 use twin_core::{Scenario, Twin, TwinError, TwinId};
 use twin_geometry::Content;
+
+pub mod view3d;
 use twin_geometry::design::{Design, DesignError};
 use twin_geometry::model::{ModelSpec, Step, Value};
 use twin_geometry::{Change, CommitId, History, HistoryError};
@@ -1015,6 +1017,14 @@ impl Project {
                 .map(|(i, step)| format!("{}. {}", i + 1, describe_step(step)))
                 .collect()
         })
+    }
+
+    /// The surface of the design built from its working parameters (so edits
+    /// show before they are committed), for the 3D viewport. `None` if there is
+    /// no design or the parameters do not build.
+    pub fn view_triangles(&self) -> Option<Vec<view3d::Triangle>> {
+        let design = self.design.as_ref()?;
+        design.preview().ok().map(|model| model.triangles())
     }
 
     /// One line on the design: its head commit, and whether the open twin is

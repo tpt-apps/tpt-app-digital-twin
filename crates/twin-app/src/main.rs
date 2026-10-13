@@ -17,6 +17,7 @@ use tpt_appfront_core::ui_tree::ContainerBuilder;
 use twin_app::{
     CollabField, NewSensor, PlotChoice, PlotData, Project, ScenarioField, SensorField,
     load_or_create_export_key, new_session_code, sensor_fields, user_config_dir,
+    view3d::{self, MAX_PITCH, Orbit, Point3, Triangle, ZOOM_RANGE},
 };
 use twin_core::TwinId;
 use twin_geometry::{Change, CommitId};
@@ -152,9 +153,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 });
             }
 
-            if current != Section::Project
-                && current != Section::Settings
-                && p.current().is_none()
+            if current != Section::Project && current != Section::Settings && p.current().is_none()
             {
                 card(c, |c| {
                     c.text("Create or open a twin in the Project section first.")
@@ -709,6 +708,15 @@ impl eframe::App for Themed {
                 p.lidar_scan_xy().ok().flatten(),
             )
         };
+        if self.section.get() == Section::Geometry {
+            let triangles = self.project.borrow().view_triangles();
+            if let Some(triangles) = triangles {
+                egui::Panel::right("viewport")
+                    .resizable(true)
+                    .default_size(340.0)
+                    .show(ui, |ui| viewport_card(ui, &triangles));
+            }
+        }
         if let Some((name, points)) = scan {
             egui::Panel::right("plot")
                 .resizable(true)
@@ -728,6 +736,93 @@ impl eframe::App for Themed {
                 let size = egui::vec2(ui.available_width(), CONTENT_HEIGHT);
                 ui.allocate_ui(size, |ui| self.inner.ui(ui, frame));
             });
+    }
+}
+
+/// The camera of the 3D viewport. It lives in egui's memory between frames, so
+/// it is not part of the project and is not saved.
+#[derive(Debug, Clone, Copy)]
+struct ViewState {
+    orbit: Orbit,
+    pan: egui::Vec2,
+}
+
+impl Default for ViewState {
+    fn default() -> Self {
+        Self {
+            orbit: Orbit::default(),
+            pan: egui::Vec2::ZERO,
+        }
+    }
+}
+
+/// The model seen from an orbiting camera. Drag to orbit, right-drag to pan,
+/// scroll to zoom. Faces are flat-shaded and drawn back to front.
+fn viewport_card(ui: &mut egui::Ui, triangles: &[Triangle]) {
+    use egui::{Align2, Color32, FontId, PointerButton, Sense, Stroke};
+
+    ui.heading("3D view");
+    ui.label(egui::RichText::new("Drag to orbit, right-drag to pan, scroll to zoom").weak());
+
+    let id = ui.id().with("viewport");
+    let mut state = ui.data(|d| d.get_temp::<ViewState>(id)).unwrap_or_default();
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), 320.0),
+        Sense::click_and_drag(),
+    );
+    if response.dragged_by(PointerButton::Primary) {
+        let d = response.drag_delta();
+        state.orbit.yaw += f64::from(d.x) * 0.01;
+        state.orbit.pitch =
+            (state.orbit.pitch + f64::from(d.y) * 0.01).clamp(-MAX_PITCH, MAX_PITCH);
+    }
+    if response.dragged_by(PointerButton::Secondary) {
+        state.pan += response.drag_delta();
+    }
+    if response.hovered() {
+        let scroll = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll != 0.0 {
+            let zoom = state.orbit.zoom * (f64::from(scroll) * 0.002).exp();
+            state.orbit.zoom = zoom.clamp(ZOOM_RANGE.0, ZOOM_RANGE.1);
+        }
+    }
+    ui.data_mut(|d| d.insert_temp(id, state));
+
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 4.0, Color32::WHITE);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        Stroke::new(1.0, Color32::from_gray(210)),
+        egui::StrokeKind::Inside,
+    );
+
+    let Some((centre, radius)) = view3d::bounds(triangles) else {
+        painter.text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "No geometry to show",
+            FontId::proportional(14.0),
+            Color32::from_gray(120),
+        );
+        return;
+    };
+    let fit = f64::from(rect.width().min(rect.height())) * 0.42 / radius;
+    let scale = fit * state.orbit.zoom;
+    let origin = rect.center() + state.pan;
+    let to_screen = |p: Point3| {
+        let s = state.orbit.screen(p, centre, scale);
+        origin + egui::vec2(s[0] as f32, s[1] as f32)
+    };
+    for i in view3d::draw_order(triangles, &state.orbit) {
+        let t = &triangles[i];
+        let k = state.orbit.shade(t) as f32;
+        let fill = Color32::from_rgb((88.0 * k) as u8, (128.0 * k) as u8, (176.0 * k) as u8);
+        painter.add(egui::Shape::convex_polygon(
+            vec![to_screen(t[0]), to_screen(t[1]), to_screen(t[2])],
+            fill,
+            Stroke::new(0.5, Color32::from_gray(40)),
+        ));
     }
 }
 
