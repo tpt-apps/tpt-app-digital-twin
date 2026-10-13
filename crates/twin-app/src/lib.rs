@@ -1391,6 +1391,65 @@ impl Project {
         Ok(())
     }
 
+    /// Share the open design's model spec with the session. Peers get the
+    /// whole spec, and the newest share wins.
+    pub fn share_geometry(&mut self) -> Result<(), ProjectError> {
+        let design = self.design.as_ref().ok_or(ProjectError::NoDesign)?;
+        let json = serde_json::to_string(design.spec())
+            .map_err(|e| ProjectError::Session(e.to_string()))?;
+        if let Some(host) = &self.collab_host {
+            host.set_geometry(&json);
+        } else if let Some(client) = self.collab_client.as_mut() {
+            client
+                .set_geometry(&json)
+                .map_err(|e| ProjectError::Session(e.to_string()))?;
+        } else {
+            return Err(ProjectError::Session(
+                "start or join a session first".into(),
+            ));
+        }
+        self.status = "Shared the geometry".to_string();
+        Ok(())
+    }
+
+    /// Use the session's shared geometry as the design's spec, as an uncommitted
+    /// edit that keeps the working parameters. A joined peer with no design yet
+    /// starts one from the twin's parameters. The status line gives the hash of
+    /// the shape built from the parameters here, so peers can compare it with
+    /// their own. Refused, with nothing changed, if the spec does not build.
+    pub fn apply_shared_geometry(&mut self) -> Result<(), ProjectError> {
+        let json = self.shared_geometry_json().ok_or_else(|| {
+            ProjectError::Session("no geometry has been shared in this session yet".into())
+        })?;
+        let spec: ModelSpec = serde_json::from_str(&json)
+            .map_err(|e| ProjectError::Session(format!("the shared geometry is not valid: {e}")))?;
+        match self.design.as_mut() {
+            Some(design) => design.set_spec(spec)?,
+            None => {
+                let twin = self.current.as_ref().ok_or(ProjectError::NoTwinOpen)?;
+                let design = Design::new(spec, twin.parameters.clone(), "Shared geometry")?;
+                self.store.save_design(twin.id, &design)?;
+                self.design = Some(design);
+            }
+        }
+        let hash = self
+            .design
+            .as_ref()
+            .and_then(|d| d.preview().ok())
+            .map_or_else(String::new, |m| m.geometry_hash()[..12].to_string());
+        self.status = format!("Applied the shared geometry (not committed), builds to {hash}");
+        Ok(())
+    }
+
+    /// The geometry JSON the session holds, from the host or the joined client.
+    fn shared_geometry_json(&self) -> Option<String> {
+        match (&self.collab_host, &self.collab_client) {
+            (Some(host), _) => host.geometry(),
+            (None, Some(client)) => client.geometry(),
+            (None, None) => None,
+        }
+    }
+
     /// Apply whatever a joined session has sent. Call this regularly while a
     /// session is open. If the host goes away, the session ends.
     pub fn collab_poll(&mut self) -> Result<(), ProjectError> {
@@ -2583,6 +2642,50 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         panic!("condition not reached in time");
+    }
+
+    #[test]
+    fn a_host_shares_its_geometry_and_a_joiner_takes_it() {
+        let config = temp_dir("geometry-config");
+        let host_dir = temp_dir("geometry-host");
+        let join_dir = temp_dir("geometry-join");
+        let mut host = Project::open(&host_dir).unwrap();
+        host.new_twin("arm").unwrap();
+        host.save().unwrap();
+        host.start_design().unwrap();
+        host.host_session("127.0.0.1:0", false, &config, "code-1", "watch-1")
+            .unwrap();
+        let addr = host.host_address().unwrap().to_string();
+
+        let mut joiner = Project::open(&join_dir).unwrap();
+        joiner.new_twin("other").unwrap();
+        // The joiner's twin needs the parameters the shared spec uses.
+        for (name, value) in [("width_m", 2.0), ("depth_m", 1.0), ("height_m", 1.0)] {
+            joiner.set_parameter(name, value).unwrap();
+        }
+        joiner.join_session(&addr, "code-1").unwrap();
+
+        // Nothing is shared until the host shares it.
+        assert!(matches!(
+            joiner.apply_shared_geometry(),
+            Err(ProjectError::Session(_))
+        ));
+
+        host.share_geometry().unwrap();
+        until(|| {
+            joiner.collab_poll().unwrap();
+            joiner.shared_geometry_json().is_some()
+        });
+        joiner.apply_shared_geometry().unwrap();
+        assert_eq!(
+            joiner.design().unwrap().spec(),
+            host.design().unwrap().spec()
+        );
+        assert!(
+            joiner.status().contains("not committed"),
+            "{}",
+            joiner.status()
+        );
     }
 
     #[test]

@@ -58,6 +58,15 @@ impl Design {
         &self.spec
     }
 
+    /// Replace the model spec, keeping the working parameters. The new spec
+    /// must build with them; otherwise the design is left unchanged. Like a
+    /// parameter edit, this is not committed until [`Design::commit`].
+    pub fn set_spec(&mut self, spec: ModelSpec) -> Result<(), DesignError> {
+        Model::build(&spec, self.history.working())?;
+        self.spec = spec;
+        Ok(())
+    }
+
     pub fn history(&self) -> &History {
         &self.history
     }
@@ -166,6 +175,34 @@ mod tests {
 
     fn design() -> Design {
         Design::new(spec(), params(&[("w", 2.0), ("d", 3.0)]), "start").unwrap()
+    }
+
+    #[test]
+    fn set_spec_changes_the_shape_or_is_refused_whole() {
+        let mut d = design();
+        let before = d.preview().unwrap().geometry_hash();
+        let taller = ModelSpec {
+            steps: vec![Step::Block {
+                width: Value::Param("w".into()),
+                depth: Value::Param("d".into()),
+                height: Value::Const(2.0),
+            }],
+        };
+        d.set_spec(taller.clone()).unwrap();
+        assert_eq!(d.spec(), &taller);
+        assert_ne!(d.preview().unwrap().geometry_hash(), before);
+
+        // A spec that needs a parameter the design does not have is refused,
+        // and the design keeps the spec it had.
+        let missing = ModelSpec {
+            steps: vec![Step::Block {
+                width: Value::Param("nope".into()),
+                depth: Value::Const(1.0),
+                height: Value::Const(1.0),
+            }],
+        };
+        assert!(d.set_spec(missing).is_err());
+        assert_eq!(d.spec(), &taller);
     }
 
     #[test]

@@ -179,6 +179,23 @@ impl SyncHost {
         self.replica.lock().unwrap().parameters()
     }
 
+    /// Share a new geometry spec (JSON) from the host and send it to every peer.
+    pub fn set_geometry(&self, spec_json: &str) {
+        let op = {
+            let mut replica = self.replica.lock().unwrap();
+            replica.set_geometry(spec_json);
+            replica.last_op().cloned()
+        };
+        if let Some(op) = op {
+            broadcast(&self.peers, SyncMessage::Ops { ops: vec![op] }, None);
+        }
+    }
+
+    /// The shared geometry spec (JSON) as the host sees it, if any.
+    pub fn geometry(&self) -> Option<String> {
+        self.replica.lock().unwrap().geometry()
+    }
+
     /// How many peers are connected and authorised.
     pub fn peer_count(&self) -> usize {
         self.peers.lock().unwrap().len()
@@ -381,13 +398,29 @@ impl SyncClient {
 
     /// Set a parameter and send the op to the host.
     pub fn set_parameter(&mut self, name: &str, value: f64) -> io::Result<()> {
+        self.edit(|replica| replica.set_parameter(name, value))
+    }
+
+    /// Share a new geometry spec (JSON) and send the op to the host.
+    pub fn set_geometry(&mut self, spec_json: &str) -> io::Result<()> {
+        self.edit(|replica| replica.set_geometry(spec_json))
+    }
+
+    /// The shared geometry spec (JSON) as this peer sees it, if any.
+    pub fn geometry(&self) -> Option<String> {
+        self.replica.geometry()
+    }
+
+    /// Make a local edit, then send its op to the host. Refused for view-only
+    /// sessions, before anything changes.
+    fn edit(&mut self, change: impl FnOnce(&mut TwinReplica)) -> io::Result<()> {
         if self.access == Access::Viewer {
             return Err(io::Error::new(
                 io::ErrorKind::PermissionDenied,
                 "this session is view-only",
             ));
         }
-        self.replica.set_parameter(name, value);
+        change(&mut self.replica);
         let op = self
             .replica
             .last_op()
@@ -566,6 +599,44 @@ mod tests {
             .unwrap();
         std::thread::sleep(Duration::from_millis(200));
         assert_eq!(host.parameters()["mass_kg"], 3.0);
+    }
+
+    #[test]
+    fn geometry_is_shared_both_ways_and_viewers_cannot_change_it() {
+        let identity = ServerIdentity::generate().unwrap();
+        let host = SyncHost::start(
+            TwinReplica::host(1, &twin()),
+            &identity,
+            "127.0.0.1:0",
+            false,
+            "edit-me",
+            "look-only",
+        )
+        .unwrap();
+        let pin = identity.fingerprint();
+        let (mut editor, _) =
+            SyncClient::connect_as(host.addr(), Some(&pin), "edit-me", "bob", 2).unwrap();
+        let (mut viewer, _) = SyncClient::connect(host.addr(), Some(&pin), "look-only", 3).unwrap();
+
+        // The editor's spec reaches the host and the viewer.
+        editor.set_geometry("spec-from-editor").unwrap();
+        wait_until(|| {
+            viewer.poll(Duration::from_millis(20)).unwrap();
+            viewer.geometry().as_deref() == Some("spec-from-editor")
+        });
+        assert_eq!(host.geometry().as_deref(), Some("spec-from-editor"));
+
+        // The host's spec reaches the editor.
+        host.set_geometry("spec-from-host");
+        wait_until(|| {
+            editor.poll(Duration::from_millis(20)).unwrap();
+            editor.geometry().as_deref() == Some("spec-from-host")
+        });
+
+        // A viewer cannot share geometry, and nothing changes.
+        let err = viewer.set_geometry("forged").unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::PermissionDenied);
+        assert_eq!(host.geometry().as_deref(), Some("spec-from-host"));
     }
 
     #[test]

@@ -28,6 +28,8 @@ enum Msg {
     NewTwin,
     Open(TwinId),
     Save,
+    ShareGeometry,
+    ApplyGeometry,
     /// Text typed into the field of the named parameter.
     Param(String, String),
     StartHistory,
@@ -373,6 +375,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             c.button("Set shared parameter").on_click(Msg::SetShared);
                             c.button("Apply shared parameters to twin")
                                 .on_click(Msg::ApplyShared);
+                            c.heading(3, "Geometry");
+                            c.button("Share this design's geometry")
+                                .on_click(Msg::ShareGeometry);
+                            c.button("Apply shared geometry to design")
+                                .on_click(Msg::ApplyGeometry);
                         }
                     });
                 }
@@ -619,6 +626,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
             Msg::SetShared => p.set_shared_parameter(),
             Msg::ApplyShared => p.apply_shared_parameters(),
+            Msg::ShareGeometry => p.share_geometry(),
+            Msg::ApplyGeometry => p.apply_shared_geometry(),
             Msg::StartDesign => p.start_design(),
             Msg::DesignParam(name, text) => p.edit_design_parameter(&name, &text),
             Msg::CommitDesign => p.commit_design().map(|_| ()),

@@ -9,7 +9,12 @@
 //! [`hub`] runs sessions through `tpt-vertex-collab`'s `SyncHub` in-process,
 //! with roles (owner, editor, viewer) and offline edits. [`TwinReplica`] is the
 //! peer-to-peer log exchange used before the hub. There is still no network
-//! transport, and geometry and sensors are not shared yet.
+//! transport. Geometry is shared as one text register (the model spec as JSON),
+//! so a concurrent edit to the geometry replaces the whole spec, the same way
+//! a parameter edit replaces one value. Sensors are not shared yet.
+
+/// Name of the text register that holds the shared geometry spec.
+pub const GEOMETRY_KEY: &str = "geometry.spec";
 
 pub mod hub;
 pub mod sync;
@@ -70,6 +75,41 @@ impl TwinReplica {
             .replica
             .set_param(self.feature, name, ParamValue::Number(value));
         self.log.push(op);
+    }
+
+    /// Set a text value on this replica (last writer wins, like a parameter).
+    /// The op is kept for other replicas.
+    pub fn set_text(&mut self, name: &str, text: &str) {
+        let op = self
+            .replica
+            .set_param(self.feature, name, ParamValue::Text(text.to_string()));
+        self.log.push(op);
+    }
+
+    /// The text value called `name`, if one is set and is text.
+    pub fn text(&self, name: &str) -> Option<String> {
+        match &self
+            .replica
+            .doc
+            .feature(self.feature)?
+            .params
+            .get(name)?
+            .value
+        {
+            ParamValue::Text(text) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    /// Share the geometry: the JSON of the design's model spec. Concurrent
+    /// edits resolve as any other register does: the newer write wins whole.
+    pub fn set_geometry(&mut self, spec_json: &str) {
+        self.set_text(GEOMETRY_KEY, spec_json);
+    }
+
+    /// The shared geometry spec (JSON), if a replica has set one.
+    pub fn geometry(&self) -> Option<String> {
+        self.text(GEOMETRY_KEY)
     }
 
     /// Apply every op from `other` that this replica does not have yet. Pull
@@ -257,6 +297,38 @@ mod tests {
         assert_eq!(a.parameters()["mass_kg"], 2.0);
         assert_eq!(a.parameters()["damping_n_s_per_m"], 0.1);
         assert_eq!(a.parameters()["stiffness_n_per_m"], 7.0);
+    }
+
+    #[test]
+    fn geometry_reaches_a_joined_replica_and_is_not_a_parameter() {
+        let (mut a, mut b) = pair();
+        assert_eq!(b.geometry(), None);
+        a.set_geometry(r#"{"steps":[]}"#);
+        b.pull(&a);
+        assert_eq!(b.geometry().as_deref(), Some(r#"{"steps":[]}"#));
+        assert!(!b.parameters().contains_key(GEOMETRY_KEY));
+    }
+
+    #[test]
+    fn concurrent_geometry_edits_resolve_to_one_whole_spec() {
+        let (mut a, mut b) = pair();
+        a.set_geometry("spec-a");
+        b.set_geometry("spec-b");
+        sync(&mut a, &mut b);
+        assert_eq!(a.geometry(), b.geometry());
+        // Equal clocks are broken by replica id: replica 2 (b) wins.
+        assert_eq!(a.geometry().as_deref(), Some("spec-b"));
+    }
+
+    #[test]
+    fn geometry_edits_leave_parameters_alone() {
+        let (mut a, mut b) = pair();
+        a.set_parameter("mass_kg", 2.0);
+        b.set_geometry("spec");
+        sync(&mut a, &mut b);
+        assert_eq!(a.parameters(), b.parameters());
+        assert_eq!(a.parameters()["mass_kg"], 2.0);
+        assert_eq!(a.geometry().as_deref(), Some("spec"));
     }
 
     #[test]
