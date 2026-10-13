@@ -789,12 +789,19 @@ impl eframe::App for Themed {
             )
         };
         if self.section.get() == Section::Geometry {
-            let triangles = self.project.borrow().view_triangles();
-            if let Some(triangles) = triangles {
+            let surface = {
+                let p = self.project.borrow();
+                p.view_surface().map(|(triangles, steps)| Surface {
+                    triangles,
+                    steps,
+                    labels: p.feature_tree(),
+                })
+            };
+            if let Some(surface) = surface {
                 egui::Panel::right("viewport")
                     .resizable(true)
                     .default_size(340.0)
-                    .show(ui, |ui| viewport_card(ui, &triangles));
+                    .show(ui, |ui| viewport_card(ui, &surface));
             }
         }
         if let Some((name, points)) = scan {
@@ -819,33 +826,43 @@ impl eframe::App for Themed {
     }
 }
 
-/// The camera of the 3D viewport. It lives in egui's memory between frames, so
-/// it is not part of the project and is not saved.
-#[derive(Debug, Clone, Copy)]
+/// The design's surface for the viewport: its faces, the step that made each
+/// one (`None` if no single step did), and a label for each step.
+struct Surface {
+    triangles: Vec<Triangle>,
+    steps: Vec<Option<usize>>,
+    labels: Vec<String>,
+}
+
+/// The camera of the 3D viewport, and the step picked by clicking a face. It
+/// lives in egui's memory between frames, so it is not part of the project and
+/// is not saved.
+#[derive(Debug, Clone, Copy, Default)]
 struct ViewState {
     orbit: Orbit,
     pan: egui::Vec2,
-}
-
-impl Default for ViewState {
-    fn default() -> Self {
-        Self {
-            orbit: Orbit::default(),
-            pan: egui::Vec2::ZERO,
-        }
-    }
+    selected: Option<usize>,
 }
 
 /// The model seen from an orbiting camera. Drag to orbit, right-drag to pan,
-/// scroll to zoom. Faces are flat-shaded and drawn back to front.
-fn viewport_card(ui: &mut egui::Ui, triangles: &[Triangle]) {
-    use egui::{Align2, Color32, FontId, PointerButton, Sense, Stroke};
+/// scroll to zoom. Click a face to select the step that made it. Faces are
+/// flat-shaded and drawn back to front.
+fn viewport_card(ui: &mut egui::Ui, surface: &Surface) {
+    use egui::{Align2, Color32, FontId, PointerButton, Pos2, Sense, Stroke};
 
     ui.heading("3D view");
-    ui.label(egui::RichText::new("Drag to orbit, right-drag to pan, scroll to zoom").weak());
-
     let id = ui.id().with("viewport");
     let mut state = ui.data(|d| d.get_temp::<ViewState>(id)).unwrap_or_default();
+    let status = match state.selected {
+        Some(k) => format!(
+            "Selected: {}",
+            surface.labels.get(k).map_or("", String::as_str)
+        ),
+        None => "Click a face to select the step that made it".to_string(),
+    };
+    ui.label(egui::RichText::new(status).weak());
+    ui.label(egui::RichText::new("Drag to orbit, right-drag to pan, scroll to zoom").weak());
+
     let (rect, response) = ui.allocate_exact_size(
         egui::vec2(ui.available_width(), 320.0),
         Sense::click_and_drag(),
@@ -866,7 +883,6 @@ fn viewport_card(ui: &mut egui::Ui, triangles: &[Triangle]) {
             state.orbit.zoom = zoom.clamp(ZOOM_RANGE.0, ZOOM_RANGE.1);
         }
     }
-    ui.data_mut(|d| d.insert_temp(id, state));
 
     let painter = ui.painter_at(rect);
     painter.rect_filled(rect, 4.0, Color32::WHITE);
@@ -877,6 +893,7 @@ fn viewport_card(ui: &mut egui::Ui, triangles: &[Triangle]) {
         egui::StrokeKind::Inside,
     );
 
+    let triangles = &surface.triangles;
     let Some((centre, radius)) = view3d::bounds(triangles) else {
         painter.text(
             rect.center(),
@@ -885,6 +902,7 @@ fn viewport_card(ui: &mut egui::Ui, triangles: &[Triangle]) {
             FontId::proportional(14.0),
             Color32::from_gray(120),
         );
+        ui.data_mut(|d| d.insert_temp(id, state));
         return;
     };
     let fit = f64::from(rect.width().min(rect.height())) * 0.42 / radius;
@@ -894,26 +912,60 @@ fn viewport_card(ui: &mut egui::Ui, triangles: &[Triangle]) {
         let s = state.orbit.screen(p, centre, scale);
         origin + egui::vec2(s[0] as f32, s[1] as f32)
     };
+    let order = view3d::draw_order(triangles, &state.orbit);
+    let corners: Vec<[Pos2; 3]> = triangles
+        .iter()
+        .map(|t| [to_screen(t[0]), to_screen(t[1]), to_screen(t[2])])
+        .collect();
+
+    // A click picks the front-most face under the pointer. A click on nothing,
+    // or on a face that no step made, clears the selection.
+    if response.clicked() {
+        let hit = response.interact_pointer_pos().and_then(|pos| {
+            order
+                .iter()
+                .rev()
+                .find(|&&i| in_triangle(pos, corners[i]))
+                .copied()
+        });
+        state.selected = hit.and_then(|i| surface.steps[i]);
+    }
+    ui.data_mut(|d| d.insert_temp(id, state));
+
     // Each face is a flat-coloured triangle in a mesh, and its edges follow it,
     // so the faces behind stay hidden. Convex polygons are not used for the
     // faces: egui feathers them for anti-aliasing, and on a face seen nearly
     // edge-on that pushes its sharp corner out into a long spike.
     let edge = Stroke::new(0.5, Color32::from_gray(40));
-    for i in view3d::draw_order(triangles, &state.orbit) {
+    for &i in &order {
         let t = &triangles[i];
         let k = state.orbit.shade(t) as f32;
-        let fill = Color32::from_rgb((88.0 * k) as u8, (128.0 * k) as u8, (176.0 * k) as u8);
-        let corners = [to_screen(t[0]), to_screen(t[1]), to_screen(t[2])];
+        let picked = state.selected.is_some() && surface.steps[i] == state.selected;
+        let fill = if picked {
+            Color32::from_rgb((232.0 * k) as u8, (150.0 * k) as u8, (60.0 * k) as u8)
+        } else {
+            Color32::from_rgb((88.0 * k) as u8, (128.0 * k) as u8, (176.0 * k) as u8)
+        };
+        let tri = corners[i];
         let mut mesh = egui::Mesh::default();
-        for corner in corners {
+        for corner in tri {
             mesh.colored_vertex(corner, fill);
         }
         mesh.add_triangle(0, 1, 2);
         painter.add(egui::Shape::mesh(mesh));
         for (a, b) in [(0, 1), (1, 2), (2, 0)] {
-            painter.line_segment([corners[a], corners[b]], edge);
+            painter.line_segment([tri[a], tri[b]], edge);
         }
     }
+}
+
+/// Whether `p` is inside triangle `t` on screen, whichever way it is wound.
+fn in_triangle(p: egui::Pos2, t: [egui::Pos2; 3]) -> bool {
+    let side = |a: egui::Pos2, b: egui::Pos2| (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x);
+    let sides = [side(t[0], t[1]), side(t[1], t[2]), side(t[2], t[0])];
+    let negative = sides.iter().any(|&s| s < 0.0);
+    let positive = sides.iter().any(|&s| s > 0.0);
+    !(negative && positive)
 }
 
 /// A lidar scan seen from above: each point at its x and y in the sensor frame,

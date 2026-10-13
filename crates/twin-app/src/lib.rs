@@ -1038,6 +1038,14 @@ impl Project {
         design.preview().ok().map(|model| model.triangles())
     }
 
+    /// The faces of the design for the viewport, and the step that made each
+    /// face (see `Model::face_steps`), from one build of the working parameters.
+    pub fn view_surface(&self) -> Option<(Vec<view3d::Triangle>, Vec<Option<usize>>)> {
+        let design = self.design.as_ref()?;
+        let model = design.preview().ok()?;
+        Some((model.triangles(), model.face_steps()))
+    }
+
     /// Mass properties of the whole design treated as one solid body, with
     /// the density from the twin's `density_kg_m3` parameter. `None` if there
     /// is no design, no density, or the parameters do not build.

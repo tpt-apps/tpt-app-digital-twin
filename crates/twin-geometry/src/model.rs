@@ -83,12 +83,14 @@ pub enum ModelError {
     Eval(EvalError),
 }
 
-/// A built model: the feature tree and its evaluated solid.
+/// A built model: the feature tree, its evaluated solid, and the solid each
+/// step produced on its own (for telling which step made which face).
 #[derive(Debug, Clone)]
 pub struct Model {
     spec: ModelSpec,
     tree: FeatureTree,
     solid: Solid,
+    step_solids: Vec<Solid>,
 }
 
 /// Segments used to approximate a circle. The kernel fixes this at 24 when it
@@ -99,13 +101,41 @@ const CIRCLE_SEGMENTS: usize = 24;
 impl Model {
     /// Build and evaluate `spec` with the parameter values in `params`.
     pub fn build(spec: &ModelSpec, params: &Content) -> Result<Self, ModelError> {
-        let tree = build_tree(spec, params)?;
-        let solid = tree.evaluate().map_err(ModelError::Eval)?.final_solid;
+        let (tree, ids) = build_tree(spec, params)?;
+        let evaluation = tree.evaluate().map_err(ModelError::Eval)?;
+        let step_solids = ids
+            .iter()
+            .map(|id| evaluation.features.get(id).cloned().unwrap_or_default())
+            .collect();
         Ok(Self {
             spec: spec.clone(),
             tree,
-            solid,
+            solid: evaluation.final_solid,
+            step_solids,
         })
+    }
+
+    /// For each triangle of [`Model::triangles`], the index of the step that
+    /// made it: the earliest step whose own solid has that triangle on its
+    /// surface. A face cut by a later step belongs to the step that first had
+    /// it. `None` when no step's surface contains the triangle (for example a
+    /// face split by a later cut, which does not sit on any one step's face).
+    pub fn face_steps(&self) -> Vec<Option<usize>> {
+        let triangles = self.triangles();
+        let radius = triangles
+            .iter()
+            .flatten()
+            .map(|p| p.iter().map(|x| x * x).sum::<f64>().sqrt())
+            .fold(1.0_f64, f64::max);
+        let tol = 1e-7 * radius;
+        triangles
+            .iter()
+            .map(|t| {
+                self.step_solids
+                    .iter()
+                    .position(|s| surface_contains(s, t, tol))
+            })
+            .collect()
     }
 
     /// Re-evaluate after a parameter edit. On error the model is unchanged.
@@ -166,7 +196,11 @@ impl Model {
     }
 }
 
-fn build_tree(spec: &ModelSpec, params: &Content) -> Result<FeatureTree, ModelError> {
+/// The feature tree for `spec`, and the feature ID of each step in order.
+fn build_tree(
+    spec: &ModelSpec,
+    params: &Content,
+) -> Result<(FeatureTree, Vec<FeatureId>), ModelError> {
     if spec.steps.is_empty() {
         return Err(ModelError::Empty);
     }
@@ -219,7 +253,7 @@ fn build_tree(spec: &ModelSpec, params: &Content) -> Result<FeatureTree, ModelEr
         };
         ids.push(tree.add(feature, None));
     }
-    Ok(tree)
+    Ok((tree, ids))
 }
 
 fn resolve(
@@ -259,6 +293,58 @@ fn rectangle(w: f64, d: f64) -> Sketch {
         s.line(corners[i], corners[(i + 1) % 4]);
     }
     s
+}
+
+/// Whether `triangle` lies on the surface of `solid`: some face of `solid` is
+/// in the same plane, and the triangle's centroid is inside that face. Works
+/// whichever way the faces are wound. `tol` is a distance.
+fn surface_contains(solid: &Solid, triangle: &[[f64; 3]; 3], tol: f64) -> bool {
+    let centroid = [0, 1, 2].map(|k| (triangle[0][k] + triangle[1][k] + triangle[2][k]) / 3.0);
+    solid.faces.iter().any(|face| {
+        let [a, b, c] = face.indices().map(|i| {
+            let v = solid.vertices[i as usize];
+            [v.x, v.y, v.z]
+        });
+        let n = cross(sub(b, a), sub(c, a));
+        let len = dot(n, n).sqrt();
+        if len == 0.0 {
+            return false;
+        }
+        let unit = n.map(|x| x / len);
+        // Every corner of the triangle must lie in the face's plane.
+        if !triangle.iter().all(|p| dot(unit, sub(*p, a)).abs() <= tol) {
+            return false;
+        }
+        // The centroid must be inside the face: on the same side of all three
+        // edges, measured in the plane, whichever way the face is wound.
+        let signed: Vec<f64> = [(a, b), (b, c), (c, a)]
+            .iter()
+            .map(|&(p, q)| {
+                let e = sub(q, p);
+                let across = dot(cross(e, sub(centroid, p)), unit);
+                across / dot(e, e).sqrt().max(f64::MIN_POSITIVE)
+            })
+            .collect();
+        let inside = signed.iter().all(|&d| d >= -tol);
+        let outside = signed.iter().all(|&d| d <= tol);
+        inside || outside
+    })
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
 }
 
 #[cfg(test)]
@@ -450,5 +536,51 @@ mod tests {
         };
         let json = serde_json::to_string(&spec).unwrap();
         assert_eq!(serde_json::from_str::<ModelSpec>(&json).unwrap(), spec);
+    }
+
+    #[test]
+    fn a_single_block_is_all_made_by_step_zero() {
+        let m = Model::build(
+            &ModelSpec {
+                steps: vec![cube(2.0)],
+            },
+            &Default::default(),
+        )
+        .unwrap();
+        let owners = m.face_steps();
+        assert_eq!(owners.len(), m.triangles().len());
+        assert!(owners.iter().all(|o| *o == Some(0)));
+    }
+
+    #[test]
+    fn a_hole_is_made_by_the_cutter_and_the_rest_by_the_block() {
+        // Block 0, cylinder 1, moved by step 2, subtracted from the block at 3.
+        let spec = ModelSpec {
+            steps: vec![
+                cube(2.0),
+                Step::Cylinder {
+                    radius: Value::Const(0.3),
+                    height: Value::Const(3.0),
+                },
+                shift(1, 1.0, 1.0, -0.5),
+                Step::Boolean {
+                    op: Op::Subtract,
+                    a: 0,
+                    b: 2,
+                },
+            ],
+        };
+        let m = Model::build(&spec, &Default::default()).unwrap();
+        let owners = m.face_steps();
+        assert_eq!(owners.len(), m.triangles().len());
+        assert!(owners.contains(&Some(0)), "the block keeps most faces");
+        assert!(
+            owners.contains(&Some(2)),
+            "the hole walls come from the cutter"
+        );
+        assert!(
+            owners.iter().all(|o| o.is_some()),
+            "every face has an owner"
+        );
     }
 }
