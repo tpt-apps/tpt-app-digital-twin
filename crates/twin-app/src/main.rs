@@ -91,15 +91,17 @@ enum Section {
     Geometry,
     Sensors,
     Share,
+    Settings,
 }
 
 impl Section {
-    const ALL: [Section; 5] = [
+    const ALL: [Section; 6] = [
         Section::Project,
         Section::Model,
         Section::Geometry,
         Section::Sensors,
         Section::Share,
+        Section::Settings,
     ];
 
     fn label(self) -> &'static str {
@@ -109,6 +111,7 @@ impl Section {
             Section::Geometry => "Geometry",
             Section::Sensors => "Sensors",
             Section::Share => "Share",
+            Section::Settings => "Settings",
         }
     }
 }
@@ -136,7 +139,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 c.button("Save").on_click(Msg::Save);
             });
 
-            if current != Section::Project && p.current().is_none() {
+            if current == Section::Settings {
+                card(c, |c| {
+                    c.heading(2, "Data location");
+                    c.text(p.dir().display().to_string())
+                        .class("text-sm text-gray-700");
+                    c.heading(2, "Network");
+                    c.text("No telemetry, no accounts, no phone-home. Nothing leaves this machine unless you host or join a session.")
+                        .class("text-sm text-gray-700");
+                    c.text("Sessions bind to this machine (loopback) by default. A LAN address is used only when you type one in the Share section.")
+                        .class("text-sm text-gray-700");
+                });
+            }
+
+            if current != Section::Project
+                && current != Section::Settings
+                && p.current().is_none()
+            {
                 card(c, |c| {
                     c.text("Create or open a twin in the Project section first.")
                         .class("text-sm text-gray-700");
