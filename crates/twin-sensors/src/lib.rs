@@ -351,6 +351,75 @@ pub fn lidar_returns(world_points: &[[f64; 3]], mount: &Mount, range_m: f64) -> 
         .collect()
 }
 
+/// Random error of a lidar's range. Each return is pushed along its own ray by
+/// a zero-mean Gaussian error of standard deviation `sigma_m`. The generator is
+/// seeded, so the same seed always gives the same scan.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RangeNoise {
+    pub sigma_m: f64,
+    pub seed: u64,
+}
+
+/// [`lidar_returns`] with range noise. With `sigma_m` of zero the result is the
+/// noise-free scan.
+pub fn lidar_returns_with_noise(
+    world_points: &[[f64; 3]],
+    mount: &Mount,
+    range_m: f64,
+    noise: RangeNoise,
+) -> Result<Vec<[f64; 3]>, SensorError> {
+    if !(noise.sigma_m.is_finite() && noise.sigma_m >= 0.0) {
+        return Err(SensorError::BadValue {
+            name: "lidar range noise".into(),
+            what: "standard deviation",
+        });
+    }
+    let mut rng = GaussianRng::new(noise.seed);
+    Ok(lidar_returns(world_points, mount, range_m)
+        .into_iter()
+        .map(|q| {
+            let r = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
+            if r == 0.0 {
+                return q;
+            }
+            let scale = (r + noise.sigma_m * rng.next_normal()) / r;
+            q.map(|x| x * scale)
+        })
+        .collect())
+}
+
+/// A small seeded generator (splitmix64) with Gaussian samples by Box–Muller.
+/// Not for security: it only makes simulated noise repeatable.
+struct GaussianRng {
+    state: u64,
+}
+
+impl GaussianRng {
+    fn new(seed: u64) -> Self {
+        Self { state: seed }
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        self.state = self.state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    /// Uniform in the open interval (0, 1).
+    fn next_uniform(&mut self) -> f64 {
+        ((self.next_u64() >> 11) as f64 + 0.5) / 9_007_199_254_740_992.0
+    }
+
+    /// A standard normal sample.
+    fn next_normal(&mut self) -> f64 {
+        let u1 = self.next_uniform();
+        let u2 = self.next_uniform();
+        (-2.0 * u1.ln()).sqrt() * (std::f64::consts::TAU * u2).cos()
+    }
+}
+
 fn rotation_from_euler([roll, pitch, yaw]: [f64; 3]) -> [[f64; 3]; 3] {
     let (sr, cr) = roll.sin_cos();
     let (sp, cp) = pitch.sin_cos();
@@ -866,6 +935,86 @@ mod tests {
             (a.translation[1] - 0.04).abs() < 2e-3,
             "dy {}",
             a.translation[1]
+        );
+    }
+
+    #[test]
+    fn range_noise_is_seeded_and_zero_sigma_is_noise_free() {
+        let world = sample_surface(&cube([0.0, 0.0, 5.0], 1.0), 12);
+        let mount = Mount::default();
+        let clean = lidar_returns(&world, &mount, 10.0);
+        let zero = RangeNoise {
+            sigma_m: 0.0,
+            seed: 7,
+        };
+        assert_eq!(
+            lidar_returns_with_noise(&world, &mount, 10.0, zero).unwrap(),
+            clean
+        );
+        let noisy = RangeNoise {
+            sigma_m: 0.02,
+            seed: 7,
+        };
+        let a = lidar_returns_with_noise(&world, &mount, 10.0, noisy).unwrap();
+        let b = lidar_returns_with_noise(&world, &mount, 10.0, noisy).unwrap();
+        assert_eq!(a, b, "same seed, same scan");
+        let other = RangeNoise {
+            sigma_m: 0.02,
+            seed: 8,
+        };
+        assert_ne!(
+            lidar_returns_with_noise(&world, &mount, 10.0, other).unwrap(),
+            a
+        );
+        assert!(
+            lidar_returns_with_noise(
+                &world,
+                &mount,
+                10.0,
+                RangeNoise {
+                    sigma_m: -1.0,
+                    seed: 1
+                }
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn range_error_has_the_requested_spread_and_no_bias() {
+        let world = sample_surface(&cube([0.0, 0.0, 5.0], 1.0), 40);
+        let mount = Mount::default();
+        let clean = lidar_returns(&world, &mount, 10.0);
+        let sigma = 0.05;
+        let noisy = lidar_returns_with_noise(
+            &world,
+            &mount,
+            10.0,
+            RangeNoise {
+                sigma_m: sigma,
+                seed: 42,
+            },
+        )
+        .unwrap();
+        assert_eq!(clean.len(), noisy.len());
+        let errors: Vec<f64> = clean
+            .iter()
+            .zip(&noisy)
+            .map(|(c, n)| {
+                let rc = (c[0] * c[0] + c[1] * c[1] + c[2] * c[2]).sqrt();
+                let rn = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+                rn - rc
+            })
+            .collect();
+        let n = errors.len() as f64;
+        let mean = errors.iter().sum::<f64>() / n;
+        let var = errors.iter().map(|e| (e - mean).powi(2)).sum::<f64>() / n;
+        // The mean of n samples has spread sigma / sqrt(n); allow four of those.
+        assert!(mean.abs() < 4.0 * sigma / n.sqrt(), "bias {mean}");
+        assert!(
+            (var.sqrt() - sigma).abs() < 0.05 * sigma,
+            "spread {}",
+            var.sqrt()
         );
     }
 }
