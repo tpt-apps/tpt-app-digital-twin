@@ -18,6 +18,7 @@ twin-license = { path = "../twin-license" }
 twin-collab = { path = "../twin-collab" }
 twin-package = { path = "../twin-package" }
 twin-sensors = { path = "../twin-sensors" }
+twin-sim = { path = "../twin-sim" }
 twin-store = { path = "../twin-store" }
 thiserror.workspace = true
 ed25519-dalek.workspace = true

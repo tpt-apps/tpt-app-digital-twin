@@ -4924,6 +4924,7 @@ dependencies = [
  "twin-license",
  "twin-package",
  "twin-sensors",
+ "twin-sim",
  "twin-store",
 ]
 

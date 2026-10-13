@@ -23,9 +23,16 @@ use twin_geometry::design::{Design, DesignError};
 use twin_geometry::mass::{MassProperties, mass_properties};
 use twin_geometry::model::{ModelSpec, Step, Value};
 use twin_geometry::{Change, CommitId, History, HistoryError};
+use twin_sim::rigid::{BodyState, RigidBody, simulate_body};
 
 /// Twin parameter holding the density (kg/m³) of the design's solid.
 pub const DENSITY: &str = "density_kg_m3";
+/// Twin parameter for gravity (m/s²), pulling the body along -z.
+pub const GRAVITY: &str = "gravity_m_s2";
+/// Twin parameters for the body's starting spin, in body axes (rad/s).
+pub const SPIN_X: &str = "spin_x_rad_s";
+pub const SPIN_Y: &str = "spin_y_rad_s";
+pub const SPIN_Z: &str = "spin_z_rad_s";
 use twin_license::{License, LicenseVerifier};
 use twin_package::PackageError;
 use twin_sensors::{Mount, Sensor, SensorKind};
@@ -1038,6 +1045,38 @@ impl Project {
         let density = *self.current.as_ref()?.parameters.get(DENSITY)?;
         let triangles = self.view_triangles()?;
         mass_properties(&triangles, density)
+    }
+
+    /// Drop the design's solid body for `duration_s` seconds and return its
+    /// state at the end. The body starts at rest at its centre of mass, with
+    /// the spin given by the `spin_*_rad_s` parameters (zero if absent), under
+    /// gravity along -z of `gravity_m_s2` (9.81 if absent). Nothing is stored.
+    /// `None` if there is no body, or the duration is not positive.
+    pub fn body_run(&self, duration_s: f64) -> Option<BodyState> {
+        let props = self.body_properties()?;
+        let twin = self.current.as_ref()?;
+        let gravity = twin.parameters.get(GRAVITY).copied().unwrap_or(9.81);
+        let spin =
+            [SPIN_X, SPIN_Y, SPIN_Z].map(|key| twin.parameters.get(key).copied().unwrap_or(0.0));
+        let body = RigidBody {
+            mass: props.mass,
+            inertia: props.inertia,
+        };
+        let start = BodyState {
+            position: props.centroid,
+            velocity: [0.0; 3],
+            orientation: [1.0, 0.0, 0.0, 0.0],
+            angular_velocity: spin,
+        };
+        let end = simulate_body(
+            &body,
+            &start,
+            [0.0, 0.0, -gravity],
+            duration_s,
+            &[duration_s],
+        )
+        .ok()?;
+        end.into_iter().next()
     }
 
     /// One line on the design: its head commit, and whether the open twin is
@@ -2672,6 +2711,27 @@ mod tests {
         let body = p.body_properties().unwrap();
         assert!((body.mass - 2000.0).abs() < 1e-9);
         assert!((body.inertia[0][0] - 2000.0 * 2.0 / 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_body_falls_under_gravity_and_keeps_a_spin_about_a_principal_axis() {
+        let dir = temp_dir("body-run");
+        let mut p = Project::open(&dir).unwrap();
+        p.new_twin("arm").unwrap();
+        p.save().unwrap();
+        p.start_design().unwrap();
+        assert!(p.body_run(1.0).is_none(), "no density, no body");
+
+        p.set_parameter(DENSITY, 1000.0).unwrap();
+        p.set_parameter(GRAVITY, 10.0).unwrap();
+        p.set_parameter(SPIN_Z, 2.0).unwrap();
+        let end = p.body_run(1.0).unwrap();
+        // The centre starts at z = 0.5 and falls g t² / 2 = 5 m in 1 s.
+        assert!((end.position[2] - (0.5 - 5.0)).abs() < 1e-8);
+        assert!((end.velocity[2] + 10.0).abs() < 1e-8);
+        // The block's z axis is a principal axis, so the spin does not change.
+        assert!((end.angular_velocity[2] - 2.0).abs() < 1e-8);
+        assert!(end.angular_velocity[0].abs() < 1e-8);
     }
 
     #[test]

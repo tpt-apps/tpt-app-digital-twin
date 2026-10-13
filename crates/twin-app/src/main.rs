@@ -15,8 +15,9 @@ use tpt_appfront_canvas::CanvasApp;
 use tpt_appfront_core::UITree;
 use tpt_appfront_core::ui_tree::ContainerBuilder;
 use twin_app::{
-    CollabField, DENSITY, NewSensor, PlotChoice, PlotData, Project, ScenarioField, SensorField,
-    load_or_create_export_key, new_session_code, sensor_fields, user_config_dir,
+    CollabField, DENSITY, GRAVITY, NewSensor, PlotChoice, PlotData, Project, SPIN_X, SPIN_Y,
+    SPIN_Z, ScenarioField, SensorField, load_or_create_export_key, new_session_code, sensor_fields,
+    user_config_dir,
     view3d::{self, MAX_PITCH, Orbit, Point3, Triangle, ZOOM_RANGE},
 };
 use twin_core::TwinId;
@@ -30,6 +31,7 @@ enum Msg {
     Save,
     ShareGeometry,
     ApplyGeometry,
+    RunBody,
     /// Text typed into the field of the named parameter.
     Param(String, String),
     StartHistory,
@@ -411,6 +413,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     .class("text-sm text-gray-700");
                                 c.input(p.parameter_text(DENSITY).unwrap_or_default())
                                     .on_input(|typed| Msg::Param(DENSITY.to_string(), typed));
+                                c.text("Gravity (m/s², pulls along -z; 9.81 when not set)")
+                                    .class("text-sm text-gray-700");
+                                c.input(p.parameter_text(GRAVITY).unwrap_or_default())
+                                    .on_input(|typed| Msg::Param(GRAVITY.to_string(), typed));
+                                c.text("Starting spin about x, y, z (rad/s; 0 when not set)")
+                                    .class("text-sm text-gray-700");
+                                for key in [SPIN_X, SPIN_Y, SPIN_Z] {
+                                    c.input(p.parameter_text(key).unwrap_or_default())
+                                        .on_input(move |typed| Msg::Param(key.to_string(), typed));
+                                }
+                                c.button("Drop body for 2 s").on_click(Msg::RunBody);
                                 match p.body_properties() {
                                     None => {
                                         c.text("Enter a density to see the mass and inertia of the design as one solid.")
@@ -665,6 +678,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Msg::SetShared => p.set_shared_parameter(),
             Msg::ApplyShared => p.apply_shared_parameters(),
             Msg::ShareGeometry => p.share_geometry(),
+            Msg::RunBody => {
+                match p.body_run(2.0) {
+                    Some(end) => {
+                        // A short line: canvas text does not wrap.
+                        let speed = end.velocity.iter().map(|v| v * v).sum::<f64>().sqrt();
+                        let spin = end
+                            .angular_velocity
+                            .iter()
+                            .map(|w| w * w)
+                            .sum::<f64>()
+                            .sqrt();
+                        p.set_status(format!(
+                            "2 s: centre z {:.3} m, speed {speed:.3} m/s, spin {spin:.3} rad/s",
+                            end.position[2]
+                        ));
+                    }
+                    None => p.set_status("Set a density first: the body needs one"),
+                }
+                Ok(())
+            }
             Msg::ApplyGeometry => p.apply_shared_geometry(),
             Msg::StartDesign => p.start_design(),
             Msg::DesignParam(name, text) => p.edit_design_parameter(&name, &text),
