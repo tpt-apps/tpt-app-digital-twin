@@ -87,7 +87,7 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [x] Scenario definition: initial conditions (`position_m`, `velocity_m_s`), duration, sample times (validated: strictly increasing, within duration)
 - [x] Results stored in Keystone and linked to the geometry version. `TwinStore::run_scenario` simulates a scenario and saves it with the twin's `geometry_ref`; with a design it refuses (`StaleGeometry`) unless the twin is linked to the design's head. `run_is_current` flags runs made at an older commit. 3 tests. Runs are not saved automatically on parameter edits
 - [x] Deterministic runs (checked by a test); regression tests against closed-form solutions for undamped, under-, critically and over-damped cases (all within 1e-6)
-- [ ] Basic controller hook via `tpt-control` (optional for MVP). Not started
+- [x] Basic controller hook: a declarative PID on position in the scenario (`twin_core::PidController`, `Scenario.controller`). The integral is an extra ODE state; the derivative uses measured velocity; zero gains match open loop; a stable PID reaches its setpoint (tests). Plain data, so a `.twin` file never runs code. **Not done:** editing it in the window, actuator limits, and using `tpt-control` (its API was not checked)
 - [ ] Wire `tpt-engineering` and `tpt-math` into the runner. Not started; the solver uses only `tpt-math-numeric`
 - [x] Solver tolerance: `simulate` sets rtol and atol to 1e-10. The solver default of 1e-6 was too loose for the analytic checks (error grew over several oscillations)
 

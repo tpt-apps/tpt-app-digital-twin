@@ -508,6 +508,7 @@ mod tests {
                 (twin_sim::POSITION0.to_string(), 1.0),
                 (twin_sim::VELOCITY0.to_string(), 0.0),
             ]),
+            controller: None,
         };
         let times = sample_times(10.0, 2.0).unwrap();
         let trace = twin_sim::simulate(&twin, &scenario, &times).unwrap();
@@ -553,6 +554,7 @@ mod tests {
                 (twin_sim::POSITION0.to_string(), x0),
                 (twin_sim::VELOCITY0.to_string(), v0),
             ]),
+            controller: None,
         };
         (twin, scenario)
     }

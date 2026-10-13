@@ -698,6 +698,7 @@ impl Project {
                     ("velocity_m_s".to_string(), 0.0),
                 ]
                 .into(),
+                controller: None,
             })?;
         }
         self.status = "Added example model (not saved)".to_string();

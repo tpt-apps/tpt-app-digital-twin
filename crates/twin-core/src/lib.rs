@@ -61,12 +61,28 @@ impl std::fmt::Display for TwinId {
     }
 }
 
-/// A simulation run: initial conditions and how long to run.
+/// A simulation run: initial conditions, how long to run, and an optional
+/// controller acting on the body.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Scenario {
     pub name: String,
     pub duration_s: f64,
     pub initial_conditions: BTreeMap<String, f64>,
+    /// Closed-loop control of the body's position. Absent means open loop.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub controller: Option<PidController>,
+}
+
+/// A PID controller on position, written as data so a `.twin` file never runs
+/// code. The force on the body is `kp * e + ki * ∫e - kd * v`, with
+/// `e = setpoint - x`. The derivative term uses the measured velocity, so a
+/// change of setpoint does not kick the force.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct PidController {
+    pub setpoint_m: f64,
+    pub kp: f64,
+    pub ki: f64,
+    pub kd: f64,
 }
 
 /// The Twin document. Edit it, then save it with [`Twin::to_json`].
@@ -233,6 +249,12 @@ fn validate_scenario(scenario: &Scenario) -> Result<(), TwinError> {
     for (name, value) in &scenario.initial_conditions {
         check_finite(name, *value)?;
     }
+    if let Some(c) = &scenario.controller {
+        check_finite("controller.setpoint_m", c.setpoint_m)?;
+        check_finite("controller.kp", c.kp)?;
+        check_finite("controller.ki", c.ki)?;
+        check_finite("controller.kd", c.kd)?;
+    }
     Ok(())
 }
 
@@ -241,12 +263,55 @@ mod tests {
     use super::*;
 
     #[test]
+    fn controller_round_trips_and_is_absent_when_unused() {
+        let mut twin = sample();
+        twin.add_scenario(Scenario {
+            name: "hold".into(),
+            duration_s: 2.0,
+            initial_conditions: BTreeMap::new(),
+            controller: Some(PidController {
+                setpoint_m: 0.5,
+                kp: 2.0,
+                ki: 0.1,
+                kd: 0.3,
+            }),
+        })
+        .unwrap();
+        let json = twin.to_json().unwrap();
+        assert_eq!(Twin::from_json(&json).unwrap(), twin);
+        // The open-loop scenario in `sample` writes no controller key, so
+        // files from before the field existed read back unchanged.
+        assert_eq!(json.matches("\"controller\"").count(), 1);
+    }
+
+    #[test]
+    fn non_finite_controller_gain_is_refused() {
+        let mut twin = sample();
+        let bad = Scenario {
+            name: "bad".into(),
+            duration_s: 1.0,
+            initial_conditions: BTreeMap::new(),
+            controller: Some(PidController {
+                setpoint_m: 0.0,
+                kp: f64::NAN,
+                ki: 0.0,
+                kd: 0.0,
+            }),
+        };
+        assert!(matches!(
+            twin.add_scenario(bad),
+            Err(TwinError::NonFinite { .. })
+        ));
+    }
+
+    #[test]
     fn scenario_setters_change_valid_values_and_refuse_the_rest() {
         let mut twin = sample();
         twin.add_scenario(Scenario {
             name: "drop".into(),
             duration_s: 1.0,
             initial_conditions: [("position_m".to_string(), 0.1)].into(),
+            controller: None,
         })
         .unwrap();
 
@@ -284,6 +349,7 @@ mod tests {
             name: "drop test".into(),
             duration_s: 3.0,
             initial_conditions: BTreeMap::from([("height_m".to_string(), 1.2)]),
+            controller: None,
         })
         .unwrap();
         twin.geometry_ref = Some("geom-1".into());
@@ -329,6 +395,7 @@ mod tests {
             name: "instant".into(),
             duration_s: 0.0,
             initial_conditions: BTreeMap::new(),
+            controller: None,
         };
         assert!(matches!(
             twin.add_scenario(bad),

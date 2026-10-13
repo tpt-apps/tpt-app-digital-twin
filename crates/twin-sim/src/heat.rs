@@ -176,6 +176,7 @@ mod tests {
             name: "cool".into(),
             duration_s: duration,
             initial_conditions: BTreeMap::from([(AMPLITUDE0.to_string(), amplitude)]),
+            controller: None,
         }
     }
 

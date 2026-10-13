@@ -894,6 +894,7 @@ mod tests {
                 (twin_sim::VELOCITY0.to_string(), 0.0),
             ]
             .into(),
+            controller: None,
         })
         .unwrap();
         let spec = ModelSpec {
@@ -965,6 +966,7 @@ mod tests {
                 (twin_sim::VELOCITY0.to_string(), 0.0),
             ]
             .into(),
+            controller: None,
         })
         .unwrap();
         let spec = ModelSpec {
@@ -1046,6 +1048,7 @@ mod tests {
                 (twin_sim::VELOCITY0.to_string(), 0.0),
             ]
             .into(),
+            controller: None,
         })
         .unwrap();
         store.save(&twin).unwrap();
