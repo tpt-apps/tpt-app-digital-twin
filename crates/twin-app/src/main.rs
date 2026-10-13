@@ -15,7 +15,7 @@ use tpt_appfront_canvas::CanvasApp;
 use tpt_appfront_core::UITree;
 use tpt_appfront_core::ui_tree::ContainerBuilder;
 use twin_app::{
-    CollabField, NewSensor, PlotChoice, PlotData, Project, ScenarioField, SensorField,
+    CollabField, DENSITY, NewSensor, PlotChoice, PlotData, Project, ScenarioField, SensorField,
     load_or_create_export_key, new_session_code, sensor_fields, user_config_dir,
     view3d::{self, MAX_PITCH, Orbit, Point3, Triangle, ZOOM_RANGE},
 };
@@ -405,6 +405,44 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     c.input(p.design_text(name).unwrap_or_default()).on_input(
                                         move |typed| Msg::DesignParam(owner.clone(), typed),
                                     );
+                                }
+                                c.heading(3, "Body");
+                                c.text("Density (kg/m³), for the body properties")
+                                    .class("text-sm text-gray-700");
+                                c.input(p.parameter_text(DENSITY).unwrap_or_default())
+                                    .on_input(|typed| Msg::Param(DENSITY.to_string(), typed));
+                                match p.body_properties() {
+                                    None => {
+                                        c.text("Enter a density to see the mass and inertia of the design as one solid.")
+                                            .class("text-sm text-gray-700");
+                                    }
+                                    Some(body) => {
+                                        c.text(format!(
+                                            "Volume {:.4} m³, mass {:.4} kg",
+                                            body.volume, body.mass
+                                        ))
+                                        .class("text-sm text-gray-700");
+                                        let [x, y, z] = body.centroid;
+                                        c.text(format!(
+                                            "Centre of mass ({x:.4}, {y:.4}, {z:.4}) m"
+                                        ))
+                                        .class("text-sm text-gray-700");
+                                        let i = body.inertia;
+                                        // One line per value: canvas text does not wrap.
+                                        c.text("Inertia about the centre (kg·m²)")
+                                            .class("text-sm text-gray-700");
+                                        for (label, value) in [
+                                            ("Ixx", i[0][0]),
+                                            ("Iyy", i[1][1]),
+                                            ("Izz", i[2][2]),
+                                            ("Ixy", i[0][1]),
+                                            ("Ixz", i[0][2]),
+                                            ("Iyz", i[1][2]),
+                                        ] {
+                                            c.text(format!("{label} {value:.4}"))
+                                                .class("text-sm text-gray-700");
+                                        }
+                                    }
                                 }
                                 c.heading(3, "Geometry branches");
                                 let head = design.history().head_branch().to_string();
@@ -823,15 +861,25 @@ fn viewport_card(ui: &mut egui::Ui, triangles: &[Triangle]) {
         let s = state.orbit.screen(p, centre, scale);
         origin + egui::vec2(s[0] as f32, s[1] as f32)
     };
+    // Each face is a flat-coloured triangle in a mesh, and its edges follow it,
+    // so the faces behind stay hidden. Convex polygons are not used for the
+    // faces: egui feathers them for anti-aliasing, and on a face seen nearly
+    // edge-on that pushes its sharp corner out into a long spike.
+    let edge = Stroke::new(0.5, Color32::from_gray(40));
     for i in view3d::draw_order(triangles, &state.orbit) {
         let t = &triangles[i];
         let k = state.orbit.shade(t) as f32;
         let fill = Color32::from_rgb((88.0 * k) as u8, (128.0 * k) as u8, (176.0 * k) as u8);
-        painter.add(egui::Shape::convex_polygon(
-            vec![to_screen(t[0]), to_screen(t[1]), to_screen(t[2])],
-            fill,
-            Stroke::new(0.5, Color32::from_gray(40)),
-        ));
+        let corners = [to_screen(t[0]), to_screen(t[1]), to_screen(t[2])];
+        let mut mesh = egui::Mesh::default();
+        for corner in corners {
+            mesh.colored_vertex(corner, fill);
+        }
+        mesh.add_triangle(0, 1, 2);
+        painter.add(egui::Shape::mesh(mesh));
+        for (a, b) in [(0, 1), (1, 2), (2, 0)] {
+            painter.line_segment([corners[a], corners[b]], edge);
+        }
     }
 }
 
