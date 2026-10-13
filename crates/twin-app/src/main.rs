@@ -32,6 +32,7 @@ enum Msg {
     ShareGeometry,
     ApplyGeometry,
     RunBody,
+    ToggleLan,
     /// Text typed into the field of the named parameter.
     Param(String, String),
     StartHistory,
@@ -152,8 +153,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     c.heading(2, "Network");
                     c.text("No telemetry, no accounts, no phone-home. Nothing leaves this machine unless you host or join a session.")
                         .class("text-sm text-gray-700");
-                    c.text("Sessions bind to this machine (loopback) by default. A LAN address is used only when you type one in the Share section.")
+                    c.text("Sessions stay on this machine (loopback) unless LAN sessions are on.")
                         .class("text-sm text-gray-700");
+                    c.text(if p.lan_sessions() {
+                        "LAN sessions: on. Sessions may use a LAN address, saved in this project."
+                    } else {
+                        "LAN sessions: off (the default). Turn on to host or join at a LAN address."
+                    })
+                    .class("text-sm text-gray-700");
+                    c.button(if p.lan_sessions() {
+                        "Turn LAN sessions off"
+                    } else {
+                        "Turn LAN sessions on"
+                    })
+                    .on_click(Msg::ToggleLan);
                 });
             }
 
@@ -678,6 +691,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             Msg::SetShared => p.set_shared_parameter(),
             Msg::ApplyShared => p.apply_shared_parameters(),
             Msg::ShareGeometry => p.share_geometry(),
+            Msg::ToggleLan => {
+                let on = !p.lan_sessions();
+                p.set_lan_sessions(on)
+            }
             Msg::RunBody => {
                 match p.body_run(2.0) {
                     Some(end) => {

@@ -436,6 +436,10 @@ const SERVER_KEY_FILE: &str = "server-key.hex";
 const PINS_FILE: &str = "trusted-signers.txt";
 /// File name, in the project folder, of the host each session address was pinned to.
 const COLLAB_PINS_FILE: &str = "collab-pins.txt";
+/// Project settings, one `key = value` per line.
+const SETTINGS_FILE: &str = "settings.txt";
+/// Settings key that turns on sessions at LAN addresses.
+const LAN_SESSIONS_KEY: &str = "lan_sessions";
 
 /// The text typed into the session fields of the window.
 #[derive(Debug, Clone, Default)]
@@ -464,6 +468,16 @@ pub enum CollabField {
 
 /// Name of the licence file, looked for in the project folder.
 pub const LICENCE_FILE: &str = "twin.license";
+
+/// The LAN setting in `dir`. Off unless the settings file says `on`.
+fn load_lan_setting(dir: &Path) -> bool {
+    std::fs::read_to_string(dir.join(SETTINGS_FILE)).is_ok_and(|text| {
+        text.lines().any(|line| {
+            line.split_once('=')
+                .is_some_and(|(key, value)| key.trim() == LAN_SESSIONS_KEY && value.trim() == "on")
+        })
+    })
+}
 
 /// The licence in `dir`, if it has a valid one. A missing or invalid file gives
 /// `None`; it never stops the project from opening.
@@ -523,6 +537,8 @@ pub struct Project {
     collab_fields: CollabFields,
     /// The licence found in the project folder, if any.
     licence: Option<License>,
+    /// Whether sessions may use LAN addresses. Off by default; see `SETTINGS_FILE`.
+    lan_sessions: bool,
     commit_message: String,
     branch_name: String,
     status: String,
@@ -550,6 +566,7 @@ impl Project {
             collab_client: None,
             collab_fields: CollabFields::default(),
             licence: load_licence(dir),
+            lan_sessions: load_lan_setting(dir),
             commit_message: String::new(),
             branch_name: String::new(),
             status: "Project ready".to_string(),
@@ -1315,6 +1332,36 @@ impl Project {
         self.collab_host.is_some() || self.collab_client.is_some()
     }
 
+    /// Whether sessions may use LAN addresses. Off by default.
+    pub fn lan_sessions(&self) -> bool {
+        self.lan_sessions
+    }
+
+    /// Turn LAN sessions on or off, and save the choice in the project folder.
+    pub fn set_lan_sessions(&mut self, on: bool) -> Result<(), ProjectError> {
+        let value = if on { "on" } else { "off" };
+        let text = format!("{LAN_SESSIONS_KEY} = {value}\n");
+        std::fs::write(self.dir.join(SETTINGS_FILE), text)?;
+        self.lan_sessions = on;
+        self.status = if on {
+            "LAN sessions are on".to_string()
+        } else {
+            "LAN sessions are off".to_string()
+        };
+        Ok(())
+    }
+
+    /// Refuse a session at a non-loopback address unless LAN sessions are on.
+    /// Loopback is always allowed, so the session stays on this machine.
+    fn check_session_address(&self, socket: SocketAddr) -> Result<(), ProjectError> {
+        if socket.ip().is_loopback() || self.lan_sessions {
+            return Ok(());
+        }
+        Err(ProjectError::Session(format!(
+            "{socket} is a LAN address, and LAN sessions are off (turn them on in Settings)"
+        )))
+    }
+
     /// Host the open twin's parameters on `addr`, for peers that give `code`.
     /// Non-loopback addresses need `allow_lan`. The host's TLS identity lives in
     /// `config_dir`. Replaces any session this window already has.
@@ -1326,6 +1373,9 @@ impl Project {
         editor_code: &str,
         viewer_code: &str,
     ) -> Result<(), ProjectError> {
+        if let Ok(socket) = addr.parse::<SocketAddr>() {
+            self.check_session_address(socket)?;
+        }
         let twin = self.current.as_ref().ok_or(ProjectError::NoTwinOpen)?;
         if editor_code.trim().is_empty() || viewer_code.trim().is_empty() {
             return Err(ProjectError::Session(
@@ -1364,6 +1414,7 @@ impl Project {
         let socket: SocketAddr = key.parse().map_err(|_| {
             ProjectError::Session(format!("`{key}` is not an address such as 127.0.0.1:7000"))
         })?;
+        self.check_session_address(socket)?;
         let mut pins = self.load_collab_pins()?;
         let pinned = pins.get(&key).cloned();
         let replica_id = random_replica_id()?;
@@ -2719,6 +2770,33 @@ mod tests {
         let body = p.body_properties().unwrap();
         assert!((body.mass - 2000.0).abs() < 1e-9);
         assert!((body.inertia[0][0] - 2000.0 * 2.0 / 12.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn lan_sessions_are_off_by_default_and_the_choice_is_kept() {
+        let dir = temp_dir("lan-setting");
+        let config = temp_dir("lan-setting-config");
+        let mut p = Project::open(&dir).unwrap();
+        p.new_twin("arm").unwrap();
+        assert!(!p.lan_sessions());
+
+        // With LAN off, a LAN address is refused before anything is bound or dialled.
+        let err = p.join_session("192.168.1.20:7000", "code").unwrap_err();
+        assert!(
+            matches!(&err, ProjectError::Session(m) if m.contains("LAN sessions are off")),
+            "{err}"
+        );
+        let err = p
+            .host_session("192.168.1.20:0", true, &config, "edit", "view")
+            .unwrap_err();
+        assert!(matches!(err, ProjectError::Session(_)), "{err}");
+
+        p.set_lan_sessions(true).unwrap();
+        assert!(p.lan_sessions());
+        // The choice is saved in the project folder.
+        assert!(Project::open(&dir).unwrap().lan_sessions());
+        p.set_lan_sessions(false).unwrap();
+        assert!(!Project::open(&dir).unwrap().lan_sessions());
     }
 
     #[test]
