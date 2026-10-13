@@ -3,6 +3,7 @@
 //! Twins are stored as validated JSON documents in a single Keystone table.
 //! Everything stays on disk under one directory, with no network access.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
@@ -68,6 +69,10 @@ fn db_err(e: anyhow::Error) -> StoreError {
 pub struct StoredRun {
     pub scenario: String,
     pub geometry_ref: Option<String>,
+    /// The twin's parameters when the run was made. Runs stored before this
+    /// field existed load with none, so they never match a twin with parameters.
+    #[serde(default)]
+    pub parameters: BTreeMap<String, f64>,
     pub times: Vec<f64>,
     pub states: Vec<[f64; 2]>,
 }
@@ -128,10 +133,19 @@ fn run_entry(index: usize) -> String {
     format!("runs/{index}.json")
 }
 
+fn recording_entry(index: usize) -> String {
+    format!("recordings/{index}.json")
+}
+
 /// True if `run` was computed against the twin's current geometry. A run
 /// made before the twin had a geometry (or with none) matches only `None`.
 pub fn run_is_current(twin: &Twin, run: &StoredRun) -> bool {
     run.geometry_ref == twin.geometry_ref
+}
+
+/// True if `run` was computed with the twin's current parameters.
+pub fn run_matches_parameters(twin: &Twin, run: &StoredRun) -> bool {
+    run.parameters == twin.parameters
 }
 
 /// A local store of twin documents.
@@ -319,6 +333,29 @@ impl TwinStore {
         ))
     }
 
+    /// Delete the recording of `sensor` for `twin`, if there is one.
+    pub fn remove_recording(&self, twin: TwinId, sensor: &str) -> Result<(), StoreError> {
+        let key = sql_text(&reading_key(twin, sensor));
+        self.run(&format!("DELETE FROM {READING_TABLE} WHERE id = {key}"))
+    }
+
+    /// Every stored recording of `twin`, sorted by sensor name.
+    pub fn list_recordings(&self, twin: TwinId) -> Result<Vec<SensorRecording>, StoreError> {
+        let rows = self.query(&format!(
+            "SELECT doc FROM {READING_TABLE} WHERE twin_id = {}",
+            sql_text(&twin.to_string())
+        ))?;
+        let mut recordings = rows
+            .iter()
+            .map(|json| {
+                serde_json::from_str::<SensorRecording>(json)
+                    .map_err(|e| StoreError::Recording(format!("stored recording is invalid: {e}")))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        recordings.sort_by(|a, b| a.sensor.cmp(&b.sensor));
+        Ok(recordings)
+    }
+
     /// The recording of `sensor` for `twin`, or `None` if there is none.
     pub fn load_recording(
         &self,
@@ -374,10 +411,8 @@ impl TwinStore {
         times: &[f64],
         design: Option<&Design>,
     ) -> Result<StoredRun, StoreError> {
-        if let Some(design) = design {
-            if !design.is_linked(twin) {
-                return Err(StoreError::StaleGeometry);
-            }
+        if design.is_some_and(|design| !design.is_linked(twin)) {
+            return Err(StoreError::StaleGeometry);
         }
         let sc = twin
             .scenarios
@@ -388,11 +423,53 @@ impl TwinStore {
         let run = StoredRun {
             scenario: scenario.to_string(),
             geometry_ref: twin.geometry_ref.clone(),
+            parameters: twin.parameters.clone(),
             times: trace.times,
             states: trace.states,
         };
         self.save_run(twin.id, &run)?;
+        self.record_imu_readings(twin, sc)?;
         Ok(run)
+    }
+
+    /// Store the noise-free IMU readings of `twin` for `scenario`, one
+    /// recording per IMU sensor, replacing the previous recording. Sensors of
+    /// other kinds are skipped. The readings are the recording of the latest
+    /// run, not of each scenario.
+    fn record_imu_readings(
+        &self,
+        twin: &Twin,
+        scenario: &twin_core::Scenario,
+    ) -> Result<(), StoreError> {
+        let imus: Vec<_> = self
+            .load_sensors(twin.id)?
+            .into_iter()
+            .filter_map(|s| match s.kind {
+                twin_sensors::SensorKind::Imu { sample_rate_hz } => Some((s.name, sample_rate_hz)),
+                _ => None,
+            })
+            .collect();
+        if imus.is_empty() {
+            return Ok(());
+        }
+        let body = twin_sim::MassSpringDamper::from_twin(twin)?;
+        for (sensor, rate_hz) in imus {
+            let times = twin_sensors::sample_times(rate_hz, scenario.duration_s)
+                .map_err(|e| StoreError::Sensor(e.to_string()))?;
+            let trace = twin_sim::simulate(twin, scenario, &times)?;
+            let readings = twin_sensors::imu_from_trace(&body, &trace)
+                .map_err(|e| StoreError::Sensor(e.to_string()))?;
+            self.save_recording(
+                twin.id,
+                &SensorRecording {
+                    sensor,
+                    channels: vec!["accel_m_s2".into()],
+                    times_s: readings.iter().map(|r| r.time_s).collect(),
+                    samples: readings.iter().map(|r| vec![r.accel_m_s2]).collect(),
+                },
+            )?;
+        }
+        Ok(())
     }
 
     /// Export a twin with its design and stored runs as a signed `.twin`
@@ -421,6 +498,10 @@ impl TwinStore {
             let json = serde_json::to_vec(&run).expect("run is serialisable");
             extras.push((run_entry(index), json));
         }
+        for (index, recording) in self.list_recordings(id)?.iter().enumerate() {
+            let json = serde_json::to_vec(recording).expect("recording is serialisable");
+            extras.push((recording_entry(index), json));
+        }
         let bytes = twin_package::export(&twin, &extras, created, signer)?;
         Ok(match passphrase {
             Some(p) => twin_package::encrypt(&bytes, p)?,
@@ -447,11 +528,17 @@ impl TwinStore {
             None => None,
         };
         let mut runs = Vec::new();
+        let mut recordings = Vec::new();
         for (path, json) in &extras {
             if path.starts_with("runs/") {
                 let run: StoredRun = serde_json::from_slice(json)
                     .map_err(|e| StoreError::Database(format!("run entry is invalid: {e}")))?;
                 runs.push(run);
+            } else if path.starts_with("recordings/") {
+                let recording: SensorRecording = serde_json::from_slice(json).map_err(|e| {
+                    StoreError::Recording(format!("recording entry is invalid: {e}"))
+                })?;
+                recordings.push(recording.validated()?);
             }
         }
         let sensors: Vec<Sensor> = match extras.iter().find(|(p, _)| p == SENSOR_ENTRY) {
@@ -467,6 +554,9 @@ impl TwinStore {
         }
         for run in &runs {
             self.save_run(twin.id, run)?;
+        }
+        for recording in &recordings {
+            self.save_recording(twin.id, recording)?;
         }
         Ok(twin.id)
     }
@@ -755,6 +845,7 @@ mod tests {
         let mut run = StoredRun {
             scenario: "drop".into(),
             geometry_ref: Some("abc".into()),
+            parameters: BTreeMap::new(),
             times: vec![0.0, 1.0],
             states: vec![[1.0, 0.0], [0.5, -0.2]],
         };
@@ -765,6 +856,7 @@ mod tests {
                 &StoredRun {
                     scenario: "bump".into(),
                     geometry_ref: None,
+                    parameters: BTreeMap::new(),
                     times: vec![0.0],
                     states: vec![[0.0, 1.0]],
                 },
@@ -903,6 +995,19 @@ mod tests {
         assert!(design.is_linked(&loaded));
         assert_eq!(dst.load_run(id, "a/b: release").unwrap(), Some(run));
 
+        // Sensor recordings travel with the twin too.
+        let reading = recording("imu", vec![0.0, 0.5], vec![vec![0.1], vec![0.2]]);
+        src.save_recording(twin.id, &reading).unwrap();
+        let with_reading = src
+            .export_twin(twin.id, "2026-10-10T00:00:00Z", &key, None)
+            .unwrap();
+        let reader = TwinStore::open(&temp_dir("export-reading")).unwrap();
+        reader.import_twin(&with_reading, &verifier, None).unwrap();
+        assert_eq!(
+            reader.load_recording(twin.id, "imu").unwrap(),
+            Some(reading)
+        );
+
         let sealed = src
             .export_twin(twin.id, "2026-10-10T00:00:00Z", &key, Some("pass"))
             .unwrap();
@@ -922,6 +1027,78 @@ mod tests {
         for d in [src_dir, dst_dir, rejected] {
             let _ = std::fs::remove_dir_all(d);
         }
+    }
+
+    #[test]
+    fn imu_readings_are_recorded_with_each_scenario_run() {
+        use twin_sensors::{Mount, SensorKind};
+        let dir = temp_dir("imu-run");
+        let store = TwinStore::open(&dir).unwrap();
+        let mut twin = Twin::new("imu run").unwrap();
+        twin.set_parameter(twin_sim::MASS, 1.0).unwrap();
+        twin.set_parameter(twin_sim::STIFFNESS, 4.0).unwrap();
+        twin.set_parameter(twin_sim::DAMPING, 0.2).unwrap();
+        twin.add_scenario(twin_core::Scenario {
+            name: "release".into(),
+            duration_s: 1.0,
+            initial_conditions: [
+                (twin_sim::POSITION0.to_string(), 0.1),
+                (twin_sim::VELOCITY0.to_string(), 0.0),
+            ]
+            .into(),
+        })
+        .unwrap();
+        store.save(&twin).unwrap();
+        store
+            .save_sensors(
+                twin.id,
+                &[
+                    twin_sensors::Sensor {
+                        name: "imu".into(),
+                        mount: Mount::default(),
+                        kind: SensorKind::Imu {
+                            sample_rate_hz: 10.0,
+                        },
+                    },
+                    twin_sensors::Sensor {
+                        name: "cam".into(),
+                        mount: Mount::default(),
+                        kind: SensorKind::Camera {
+                            fov_deg: 60.0,
+                            width_px: 640,
+                            height_px: 480,
+                        },
+                    },
+                ],
+            )
+            .unwrap();
+        assert_eq!(store.load_recording(twin.id, "imu").unwrap(), None);
+
+        store
+            .run_scenario(&twin, "release", &[0.0, 1.0], None)
+            .unwrap();
+        let rec = store.load_recording(twin.id, "imu").unwrap().unwrap();
+        assert_eq!(rec.channels, vec!["accel_m_s2"]);
+        assert_eq!(rec.times_s.len(), 11, "10 Hz over 1 s, including t = 0");
+        // At rest-start the acceleration is -k x0 / m = -0.4 m/s^2.
+        assert!(
+            (rec.samples[0][0] + 0.4).abs() < 1e-9,
+            "{:?}",
+            rec.samples[0]
+        );
+        // The camera is not an IMU, so it gets no recording.
+        assert_eq!(store.load_recording(twin.id, "cam").unwrap(), None);
+
+        // A second run replaces the recording rather than adding one.
+        store
+            .run_scenario(&twin, "release", &[0.0, 1.0], None)
+            .unwrap();
+        assert_eq!(
+            store.list_recordings(twin.id).unwrap().len(),
+            1,
+            "one recording per IMU sensor"
+        );
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]

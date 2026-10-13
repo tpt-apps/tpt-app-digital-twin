@@ -127,6 +127,22 @@ impl Model {
         &self.solid
     }
 
+    /// The surface as triangles, each given by its three corners in model
+    /// coordinates.
+    pub fn triangles(&self) -> Vec<[[f64; 3]; 3]> {
+        let vertices = &self.solid.vertices;
+        self.solid
+            .faces
+            .iter()
+            .map(|face| {
+                face.indices().map(|i| {
+                    let v = vertices[i as usize];
+                    [v.x, v.y, v.z]
+                })
+            })
+            .collect()
+    }
+
     /// Enclosed volume. The kernel's sign depends on winding, so this is absolute.
     pub fn volume(&self) -> f64 {
         self.solid.volume().abs()
@@ -248,6 +264,35 @@ fn rectangle(w: f64, d: f64) -> Sketch {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn triangles_cover_the_block_surface() {
+        // A 2 x 1 x 1 block has surface area 2 (2*1 + 2*1 + 1*1) = 10.
+        let spec = ModelSpec {
+            steps: vec![Step::Block {
+                width: Value::Const(2.0),
+                depth: Value::Const(1.0),
+                height: Value::Const(1.0),
+            }],
+        };
+        let model = Model::build(&spec, &Content::new()).unwrap();
+        let triangles = model.triangles();
+        assert!(!triangles.is_empty());
+        let area: f64 = triangles
+            .iter()
+            .map(|[a, b, c]| {
+                let u = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                let v = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+                let x = [
+                    u[1] * v[2] - u[2] * v[1],
+                    u[2] * v[0] - u[0] * v[2],
+                    u[0] * v[1] - u[1] * v[0],
+                ];
+                0.5 * (x[0] * x[0] + x[1] * x[1] + x[2] * x[2]).sqrt()
+            })
+            .sum();
+        assert!((area - 10.0).abs() < 1e-6, "area {area}");
+    }
 
     fn params(pairs: &[(&str, f64)]) -> Content {
         pairs.iter().map(|(k, v)| (k.to_string(), *v)).collect()

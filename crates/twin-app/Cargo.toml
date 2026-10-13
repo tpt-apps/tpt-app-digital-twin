@@ -14,5 +14,16 @@ eframe = { version = "0.35", default-features = false }
 egui = "0.35"
 twin-core = { path = "../twin-core" }
 twin-geometry = { path = "../twin-geometry" }
+twin-license = { path = "../twin-license" }
+twin-collab = { path = "../twin-collab" }
+twin-package = { path = "../twin-package" }
+twin-sensors = { path = "../twin-sensors" }
 twin-store = { path = "../twin-store" }
 thiserror.workspace = true
+ed25519-dalek.workspace = true
+getrandom.workspace = true
+rfd = "0.17"
+
+[features]
+# Official binaries: show the licence banner when no valid licence file is found.
+official = []

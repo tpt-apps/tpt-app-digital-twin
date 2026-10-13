@@ -116,15 +116,14 @@ impl Client {
         // An edit loses when a newer write to the same parameter is already in
         // the room. Report those, so the caller can tell the user.
         for op in &pending {
-            if let Op::SetParam {
+            let Op::SetParam {
                 key, name, value, ..
             } = op
-            {
-                if client.replica.doc.param(*key, name) != Some(value)
-                    && !client.lost.contains(name)
-                {
-                    client.lost.push(name.clone());
-                }
+            else {
+                continue;
+            };
+            if client.replica.doc.param(*key, name) != Some(value) && !client.lost.contains(name) {
+                client.lost.push(name.clone());
             }
         }
         client.pending = pending;
@@ -503,9 +502,10 @@ mod tests {
             ParamValue::Number(1.0),
         ));
         let outs = editor.flush(&mut hub);
-        assert!(outs
-            .iter()
-            .any(|o| matches!(o.message, ServerMessage::Rejected { .. })));
+        assert!(
+            outs.iter()
+                .any(|o| matches!(o.message, ServerMessage::Rejected { .. }))
+        );
         assert_eq!(editor.pending_len(), 1);
     }
 }

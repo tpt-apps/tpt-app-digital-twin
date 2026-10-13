@@ -24,6 +24,8 @@ pub enum TwinError {
     NonFinite { field: String, value: f64 },
     #[error("scenario `{name}` duration must be positive, got {duration_s}")]
     InvalidDuration { name: String, duration_s: f64 },
+    #[error("no scenario named `{0}`")]
+    NoScenario(String),
     #[error("unsupported schema version {found} (this build supports up to {supported})")]
     UnsupportedSchema { found: u32, supported: u32 },
     #[error("invalid twin document: {0}")]
@@ -111,6 +113,49 @@ impl Twin {
         Ok(())
     }
 
+    /// Set the duration of scenario `scenario`. Refused, with the twin unchanged,
+    /// if the scenario does not exist or the duration is not positive.
+    pub fn set_scenario_duration(
+        &mut self,
+        scenario: &str,
+        duration_s: f64,
+    ) -> Result<(), TwinError> {
+        self.edit_scenario(scenario, |sc| sc.duration_s = duration_s)
+    }
+
+    /// Set initial condition `key` of scenario `scenario`. Refused, with the
+    /// twin unchanged, if the scenario does not exist or the value is not finite.
+    pub fn set_scenario_initial(
+        &mut self,
+        scenario: &str,
+        key: impl Into<String>,
+        value: f64,
+    ) -> Result<(), TwinError> {
+        let key = key.into();
+        self.edit_scenario(scenario, |sc| {
+            sc.initial_conditions.insert(key, value);
+        })
+    }
+
+    /// Apply `edit` to a copy of scenario `name`, then store the copy if it is
+    /// valid.
+    fn edit_scenario(
+        &mut self,
+        name: &str,
+        edit: impl FnOnce(&mut Scenario),
+    ) -> Result<(), TwinError> {
+        let index = self
+            .scenarios
+            .iter()
+            .position(|sc| sc.name == name)
+            .ok_or_else(|| TwinError::NoScenario(name.to_owned()))?;
+        let mut scenario = self.scenarios[index].clone();
+        edit(&mut scenario);
+        validate_scenario(&scenario)?;
+        self.scenarios[index] = scenario;
+        Ok(())
+    }
+
     /// Check every invariant. Called on construction, on load and before save.
     pub fn validate(&self) -> Result<(), TwinError> {
         if self.name.trim().is_empty() {
@@ -194,6 +239,43 @@ fn validate_scenario(scenario: &Scenario) -> Result<(), TwinError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn scenario_setters_change_valid_values_and_refuse_the_rest() {
+        let mut twin = sample();
+        twin.add_scenario(Scenario {
+            name: "drop".into(),
+            duration_s: 1.0,
+            initial_conditions: [("position_m".to_string(), 0.1)].into(),
+        })
+        .unwrap();
+
+        twin.set_scenario_duration("drop", 5.0).unwrap();
+        twin.set_scenario_initial("drop", "position_m", 0.3)
+            .unwrap();
+        twin.set_scenario_initial("drop", "velocity_m_s", -0.2)
+            .unwrap();
+        let sc = twin.scenarios.iter().find(|sc| sc.name == "drop").unwrap();
+        assert_eq!(sc.duration_s, 5.0);
+        assert_eq!(sc.initial_conditions["position_m"], 0.3);
+        assert_eq!(sc.initial_conditions["velocity_m_s"], -0.2);
+
+        // Refused values and unknown scenarios leave the twin as it was.
+        let before = twin.clone();
+        assert!(matches!(
+            twin.set_scenario_duration("drop", 0.0),
+            Err(TwinError::InvalidDuration { .. })
+        ));
+        assert!(matches!(
+            twin.set_scenario_initial("drop", "position_m", f64::NAN),
+            Err(TwinError::NonFinite { .. })
+        ));
+        assert!(matches!(
+            twin.set_scenario_duration("missing", 1.0),
+            Err(TwinError::NoScenario(_))
+        ));
+        assert_eq!(twin, before);
+    }
 
     fn sample() -> Twin {
         let mut twin = Twin::new("Robot arm").unwrap();

@@ -10,7 +10,7 @@ use egui::{Color32, CornerRadius, FontFamily, FontId, Stroke, TextStyle};
 /// Page background, behind the cards.
 pub const PAGE: Color32 = Color32::from_rgb(0xF3, 0xF5, 0xF8);
 /// Card and text field background.
-const SURFACE: Color32 = Color32::WHITE;
+pub const SURFACE: Color32 = Color32::WHITE;
 /// Resting control fill (buttons, inputs).
 const CONTROL: Color32 = Color32::from_rgb(0xE8, 0xEC, 0xF2);
 /// Control fill under the pointer.
@@ -22,7 +22,16 @@ const BORDER: Color32 = Color32::from_rgb(0xD0, 0xD7, 0xE2);
 /// Main text.
 const INK: Color32 = Color32::from_rgb(0x1F, 0x29, 0x37);
 /// Accent: selection, links and hover edges.
-const ACCENT: Color32 = Color32::from_rgb(0x3B, 0x6E, 0xF5);
+pub const ACCENT: Color32 = Color32::from_rgb(0x3B, 0x6E, 0xF5);
+
+/// Frame for the header and navigation: a white band with a hairline edge,
+/// so the chrome reads as separate from the page.
+pub fn chrome_frame() -> egui::Frame {
+    egui::Frame::new()
+        .fill(SURFACE)
+        .stroke(Stroke::new(1.0, BORDER))
+        .inner_margin(egui::Margin::symmetric(12, 8))
+}
 
 /// Paint the page background over the whole window. Call before drawing the
 /// content: the canvas draws only its own widgets and cards, so the area

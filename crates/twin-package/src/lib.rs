@@ -84,6 +84,11 @@ pub struct Manifest {
     pub format_version: u32,
     pub twin_id: String,
     pub created: String,
+    /// The signer's Ed25519 public key, as 64 hex digits. Signed along with
+    /// the rest of the manifest. Packages written before this field existed
+    /// have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signer: Option<String>,
     pub entries: Vec<ManifestEntry>,
 }
 
@@ -114,6 +119,7 @@ pub fn export(
         format_version: FORMAT_VERSION,
         twin_id: twin.id.to_string(),
         created: created.to_string(),
+        signer: Some(hex(signer.verifying_key().as_bytes())),
         entries: files
             .iter()
             .map(|(path, data)| ManifestEntry {
@@ -138,6 +144,30 @@ pub fn export(
         .finish()
         .map_err(|e| PackageError::Archive(e.to_string()))?;
     Ok(cursor.into_inner())
+}
+
+/// The public key that signed `bytes`, as recorded in its manifest. This is
+/// not a verification: `import` with this key does the checking. Callers use
+/// it to decide whether to trust the signer before importing.
+pub fn signer_key(bytes: &[u8]) -> Result<VerifyingKey, PackageError> {
+    let mut archive =
+        ZipArchive::new(Cursor::new(bytes)).map_err(|e| PackageError::Archive(e.to_string()))?;
+    let manifest_bytes =
+        read_entry(&mut archive, MANIFEST)?.ok_or(PackageError::Missing(MANIFEST))?;
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)
+        .map_err(|e| PackageError::Manifest(e.to_string()))?;
+    let hex_key = manifest
+        .signer
+        .ok_or_else(|| PackageError::Manifest("package does not name its signer".into()))?;
+    let bytes: [u8; 32] = (0..64)
+        .step_by(2)
+        .map(|i| u8::from_str_radix(hex_key.get(i..i + 2).unwrap_or("zz"), 16))
+        .collect::<Result<Vec<u8>, _>>()
+        .ok()
+        .and_then(|v| v.try_into().ok())
+        .ok_or_else(|| PackageError::Manifest("signer key is not 64 hex digits".into()))?;
+    VerifyingKey::from_bytes(&bytes)
+        .map_err(|_| PackageError::Manifest("signer key is invalid".into()))
 }
 
 /// Verify and open a package. Fails on any signature, hash or path problem.
@@ -328,6 +358,15 @@ fn hex(bytes: &[u8]) -> String {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
+    #[test]
+    fn the_signer_is_recorded_and_can_be_read_before_import() {
+        let bytes = export(&twin(), &extras(), "2026-10-10T00:00:00Z", &signer()).unwrap();
+        assert_eq!(signer_key(&bytes).unwrap(), signer().verifying_key());
+        // The recorded signer is the key that import checks against.
+        assert!(import(&bytes, &signer_key(&bytes).unwrap()).is_ok());
+        let other = SigningKey::from_bytes(&[8u8; 32]).verifying_key();
+        assert!(import(&bytes, &other).is_err());
+    }
 
     fn signer() -> SigningKey {
         SigningKey::from_bytes(&[3u8; 32])

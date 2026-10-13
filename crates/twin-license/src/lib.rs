@@ -59,6 +59,16 @@ pub struct LicenseVerifier {
 }
 
 impl LicenseVerifier {
+    /// Build a verifier from a public key in the text form stored in `keys/`:
+    /// the 32 raw key bytes, base64-encoded.
+    pub fn from_base64(text: &str) -> Result<Self, LicenseError> {
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(text.trim())
+            .map_err(|_| LicenseError::BadPublicKey)?;
+        let key: [u8; 32] = bytes.try_into().map_err(|_| LicenseError::BadPublicKey)?;
+        Self::new(&key)
+    }
+
     pub fn new(public_key: &[u8; 32]) -> Result<Self, LicenseError> {
         VerifyingKey::from_bytes(public_key)
             .map(|key| Self { key })
@@ -190,5 +200,17 @@ mod tests {
             verifier().verify(json),
             Err(LicenseError::BadSignatureEncoding)
         );
+    }
+}
+
+#[cfg(test)]
+mod vendor_key_tests {
+    use super::*;
+
+    /// The committed vendor public key decodes and is accepted by the verifier.
+    #[test]
+    fn committed_vendor_public_key_is_valid() {
+        let text = include_str!("../../../keys/twin-vendor.pub");
+        assert!(LicenseVerifier::from_base64(text).is_ok());
     }
 }

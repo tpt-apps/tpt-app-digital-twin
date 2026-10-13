@@ -1,5 +1,7 @@
 # Twin (Digital Twin Workbench) — TODO
 
+GUI review (done): the window now has a header bar (product name, project folder, open twin), a left navigation with five sections (Project, Model, Geometry, Sensors, Share), and one section shown at a time, instead of one long scroll. The toolbar (status, New twin, Save) stays on every section. Chosen style: a light, Fusion/Onshape-like engineering look (cool grey page, white panels, one blue accent, selected section highlighted). Checked by screenshot: Project, Model, Geometry (start, feature tree, parameters, branches) and Sensors (add a camera, its settings) sections, and the Share hint. Also checked by screenshot: the Save-then-run flow (example model, run, Plot shows the position and velocity lines in the right panel), and a lidar added with its settings. Still unchecked by eye: the lidar scan panel (Save scan, Plot scan) and the Share cards with an open twin. Known layout limit: canvas text does not wrap, so long summary lines (camera and lidar) run under the plot panel when it is open. Visual check: the main window launches and its layout was checked by screenshot (New twin, Twins list, Parameters, History and Simulation cards in order). Driving the deeper cards by clicks did not work reliably, because the editor kept taking focus, so the Shared session, Geometry, Sensors, plot and scan panels are still unchecked by eye.
+
 Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 
 ## Decisions locked in
@@ -17,11 +19,11 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 ## Open decisions (default shown; change if wrong)
 
 - [x] Exact foundation-crate URLs and commits — `github.com/TPT-Solutions/<crate>`, pinned to master on 2026-10-10 (see `docs/ARCHITECTURE.md`)
-- [ ] Rust edition / MSRV — default: edition 2021, latest stable (note `tpt-science` uses 2024 / 1.85)
-- [ ] What the key-file licence does in official binaries (banner only vs. feature gate) — default: banner only
+- [x] Rust edition / MSRV — **decided: edition 2024, `rust-version = "1.95"`.** The 1.85 default does not build: `tpt-sci-ode`'s cranelift needs rustc 1.95 (checked with `cargo +1.95 check --workspace --all-targets`). Clippy and tests pass on stable
+- [x] What the key-file licence does in official binaries (banner only vs. feature gate) — **decided: banner only**, via the `official` feature (`Project::licence_banner`)
 - [x] Encryption scheme for packages — ChaCha20-Poly1305 with an Argon2id passphrase KDF (implemented in `twin-package`)
-- [ ] Rendering backend for the 3D viewport — depends on what `tpt-appfront` offers
-- [ ] Dependency licence checker — default: `cargo-deny`
+- [x] Rendering backend for the 3D viewport — **decided: `glow`**, which the appfront canvas already uses. The spike below still has to confirm it
+- [x] Dependency licence checker — default: `cargo-deny` (`deny.toml`; `cargo deny check licenses` passes)
 
 ## Phase 0 — Workspace & groundwork
 
@@ -42,10 +44,10 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [x] Fix `tpt-sci-ode`: vendored with the fix (`vendor/tpt-sci-ode/VENDORED.md`). Upstream patch in `docs/upstream/tpt-sci-ode-cranelift.patch`, verified to apply to upstream master
 - [~] Submit the `tpt-sci-ode` patch upstream. **Prepared, not pushed.** Commit `6a4fa1c` (no co-author trailer, amended) is on local branch `fix/align-cranelift-0.135` in the scratch clone of `tpt-science`. PR text: `docs/upstream/PR_BODY.md`. Push and PR need GitHub auth, which this session doesn't have (`gh` not installed, no git credentials). Run `gh auth login`, then the push and `gh pr create` steps
 - [x] Licence: allow `Apache-2.0 WITH LLVM-exception` (cranelift crates) in `deny.toml`
-- [ ] Decide whether `tpt-sci-ode` stays vendored or moves to the git dep once upstream merges the fix
+- [ ] Decide whether `tpt-sci-ode` stays vendored or moves to the git dep once upstream merges the fix — **recommended: stay vendored until the upstream PR merges**
 - [x] LAN default binding: `sync_server` binds loopback by default. **Problem:** its default token is the hardcoded `dev`; Twin must not use that binary as-is (`docs/ARCHITECTURE.md` finding 6)
 - [ ] Verify macOS and Linux builds of the git deps (CI)
-- [ ] Decide the org for the GitHub remote, then create it
+- [x] Decide the org for the GitHub remote — **decided: `tpt-apps`**, as `Cargo.toml` already says. Creating the remote is still open (publishing is excluded for now)
 - [ ] Spike: 3D viewport renderer through egui paint callbacks (`glow` vs `wgpu`) — see `docs/ARCHITECTURE.md` finding 2
 
 ## Phase 1 — Twin document & storage (`twin-core`, `twin-store`)
@@ -70,11 +72,11 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 ## Phase 3 — LAN collaboration (`twin-collab`)
 
 - [x] Check what real-time sync `tpt-vertex` provides: `tpt-vertex-collab` already has a CRDT, a `SyncHub` and a WebSocket server, so no new transport protocol was needed (see `docs/ARCHITECTURE.md`)
-- [ ] Peer discovery on the LAN (e.g. mDNS). Not started; no discovery until the opt-in LAN setting exists
+- [ ] Peer discovery on the LAN (e.g. mDNS). **Decided: manual address entry first; mDNS later.** Not started; no discovery until the opt-in LAN setting exists
 - [~] Join / host a session: `twin_collab::hub` runs sessions through `tpt-vertex-collab`'s `SyncHub` in-process. Only the owner hosts; joiners to an empty room are refused; viewers cannot edit; offline edits are kept and sent after reconnecting; an offline edit that loses to a newer write is reported by `Client::lost_on_reconnect`. Tested with 11 tests. **Not done:** showing peers (presence)
-- [~] CRDT sync of **parameters** (`twin-collab`): `TwinReplica` keeps an op log over `tpt-vertex-collab` LWW registers; `sync` / `pull` exchange logs in any order. Tested: different and same-parameter edits, repeated pulls, a partition with edits on both sides then heal, equal-clock tie-break by replica ID, three replicas. **Not done:** geometry (feature tree) sync; a network transport (the `SyncHub` in `tpt-vertex-collab`)
-- [~] LAN-only by default: `twin_collab::serve` binds loopback and refuses any other address unless `allow_lan` is passed (tested). **Not done:** the user-facing setting, and TLS, which LAN use needs
-- [~] Authenticated peers: tokens checked by the hub's `MemoryAuth`, with per-room grants. **Not done:** encryption, signed tokens or a persistent auth store (the in-memory table is for single-node use)
+- [~] CRDT sync of **parameters** (`twin-collab`): `TwinReplica` keeps an op log over `tpt-vertex-collab` LWW registers; `sync` / `pull` exchange logs in any order. Tested: different and same-parameter edits, repeated pulls, a partition with edits on both sides then heal, equal-clock tie-break by replica ID, three replicas. **Network transport:** `twin_collab::sync` shares parameters over TLS (`SyncHost` / `SyncClient`): a joiner sends the session code, gets a snapshot of the op log, and then both sides exchange ops, with the host relaying between peers. The host stops listening when it is dropped. 4 tests, including edits both ways between two peers. **Not done:** geometry (feature tree) sync, and sharing the hub's roles (owner, editor, viewer) over this transport
+- [~] LAN-only by default: `twin_collab::serve` binds loopback and refuses any other address unless `allow_lan` is passed (tested). **TLS built:** `twin_collab::tls` serves over TLS with a self-signed certificate, and clients pin its fingerprint (trust on first use; see the module docs for the first-contact caveat). The plain transport now refuses every non-loopback address. The host identity is kept in the user config folder (`load_or_create_server_identity` in `twin-app`, 1 test). **Not done:** the user-facing setting
+- [~] Authenticated peers: tokens checked by the hub's `MemoryAuth`, with per-room grants. Encryption is now in place (TLS above). **Not done:** signed tokens or a persistent auth store (the in-memory table is for single-node use)
 - [x] Partition and heal, multi-process: `tests/multi_process.rs` runs the server as a child process (`twin_collab_serve`) and drives three peers over real sockets. A partition is a closed socket; offline edits are sent after reconnecting; all peers converge. Passed in 5 runs. **Not done:** peers on different machines, and an unreliable network (loss, reordering, delay)
 
 ## Phase 4 — Simulation (`twin-sim`)
@@ -87,7 +89,7 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [x] Deterministic runs (checked by a test); regression tests against closed-form solutions for undamped, under-, critically and over-damped cases (all within 1e-6)
 - [ ] Basic controller hook via `tpt-control` (optional for MVP). Not started
 - [ ] Wire `tpt-engineering` and `tpt-math` into the runner. Not started; the solver uses only `tpt-math-numeric`
-- [ ] Solver tolerance: `simulate` sets rtol and atol to 1e-10. The solver default of 1e-6 was too loose for the analytic checks (error grew over several oscillations)
+- [x] Solver tolerance: `simulate` sets rtol and atol to 1e-10. The solver default of 1e-6 was too loose for the analytic checks (error grew over several oscillations)
 
 ## Phase 5 — Sensors & fusion (`twin-sensors`)
 
@@ -95,46 +97,46 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [~] Synthetic data generation from simulation: noise-free IMU readings from the mass-spring-damper (`twin_sensors::imu_from_trace`, sample times via `sample_times`). Camera and lidar output and noise models are not started
 - [~] Point-cloud registration via `tpt-perception` (ICP, point-to-point): `twin_sensors::register_point_clouds(source, target, prior, max_dist)`. Tested on an L-shape (known motion) and on lidar scans of a cube taken from a moving sensor (4 cm, 2°) with a prior. An identity start stalls on that motion (documented in the function). **Synthetic lidar:** `sample_surface` and `lidar_returns` (range-limited, sensor frame, no occlusion or beam pattern). **IMU prior:** `integrate_imu` double-integrates IMU acceleration (trapezoid rule, no drift correction); its translation feeds registration as the prior, tested against the simulated motion. **Not done:** rotation prior (no gyro model), so the IMU prior works only without yaw; sensor fusion beyond this (EKF/UKF from `tpt-perception` unused); point-to-plane ICP; occlusion and beam patterns in the lidar model. **`tpt-perception` is vendored** in `vendor/tpt-perception` (its `tpt-math` path dependencies can't resolve as a git dependency; see `VENDORED.md`)
 - [ ] Data for the visualisation layer
-- [~] Sensor history stored in Keystone: `TwinStore::save_recording` / `load_recording` (table `sensor_readings`, one recording per twin and sensor, validated, removed with the twin; 1 test). **Not done:** saving readings from a scenario run automatically, and including recordings in the `.twin` export
+- [~] Sensor history stored in Keystone: `TwinStore::save_recording` / `load_recording` (table `sensor_readings`, one recording per twin and sensor, validated, removed with the twin; 1 test). Recordings are included in the `.twin` export (`recordings/<n>.json`) and restored on import. Each scenario run also records the IMU sensors' noise-free readings (`TwinStore::run_scenario`, one recording per IMU, replaced by the next run; the recording does not say which scenario it came from). **Not done:** per-scenario recordings, and camera or lidar output
 
 ## Phase 6 — Package export / import (`twin-package`)
 
 - [x] Spec the `.twin` container layout in `docs/PACKAGE_FORMAT.md`
 - [x] Manifest with versions and SHA-256 per entry, signed with Ed25519 (`twin-package`)
-- [~] Export: `TwinStore::export_twin` / `import_twin` write and read a signed (optionally encrypted) `.twin` with the twin, its design (`design.json`: model spec and history, geometry hashes included) and its stored runs (`runs/<n>.json`). **Not done:** the Keystone snapshot (no snapshot API in `tpt-keystone`); sensor history (Phase 5); the simulation setup is only the twin's scenarios, not a separate record
+- [~] Export: `TwinStore::export_twin` / `import_twin` write and read a signed (optionally encrypted) `.twin` with the twin, its design (`design.json`: model spec and history, geometry hashes included) and its stored runs (`runs/<n>.json`). **Not done:** the Keystone snapshot (no snapshot API in `tpt-keystone`); the simulation setup is only the twin's scenarios, not a separate record
 - [x] ed25519 signing and verification. Import rejects bad signatures, unlisted entries, hash mismatches and unsafe paths
 - [x] Optional encryption on export: ChaCha20-Poly1305, key from Argon2id (`twin-package::encrypt`)
 - [x] Import integrity checks; clear errors on tamper, wrong key and version mismatch. 10 tests
 - [~] Round-trip test: the store test exports from one store and imports into another in the same process (separate directories, separate keys, wrong-key and tamper rejection). **Not done:** a real move between two machines
-- [ ] **Open:** who signs a user's own export. The format needs a key the recipient trusts, and a vendor key isn't right for users (`docs/PACKAGE_FORMAT.md` open items)
+- [x] **Who signs a user's own export — decided and built:** each user has their own key (created on first export in `%APPDATA%	win`), the signer is recorded in the signed manifest, and imports pin the signer per twin (trust on first use; a different key for the same twin is refused). `Project::export_twin` / `import_twin`, 2 tests, and a Packages card in the window. The **format is changed** (`signer` field); see `docs/PACKAGE_FORMAT.md`
 
 ## Phase 7 — Desktop app (`twin-app`)
 
 - [~] `tpt-appfront` shell: window and project open/save. `twin-app` uses `tpt-appfront-canvas` (egui + glow), pinned to `61465269` and building on Windows. `twin_app::Project` owns the store, twin list and open twin, with 5 tests; `main.rs` is a view over it with New, Save and Open buttons. **Not done:** menus, a native folder picker, and the rebuild and results views (parameter editing is now in the window). Licences resolved: BSL-1.0 (clipboard crates), OFL-1.1 and Ubuntu-font-1.0 (bundled egui fonts) are on the allow list in `deny.toml`, and `cargo deny check licenses` passes. The Ubuntu Font review stays open under Phase 8
 - [x] Window theme: light palette, rounded controls, card sections, scrolling (`crates/twin-app/src/theme.rs`). Checked by screenshot. **Limitation:** the canvas has no root scrolling and lays out to the height it is given, so the content sits in a fixed 2400 px scroll region (blank space below short content). Proper fix: auto-height root in `tpt-appfront-canvas` (upstream)
 - [ ] 3D viewport with orbit / pan / zoom and selection
-- [~] Parameter panel and feature tree: **parameter panel done.** Each parameter of the open twin has an editable field; numbers apply at once (not saved until Save), and text that is not a number is refused and blocks Save (`Project::edit_parameter`, 1 test). **Not done:** the feature tree, and field-level validation ranges
-- [~] History panel (branches, commits, diff): **parameter history done.** Start history, commit the saved parameters, create and switch branches, see the log and the head commit's changes (`Project` history methods, 1 test). Commit and switch are refused while the twin has unsaved edits. **Not done:** merge, diff between any two commits, and geometry history (the design is not yet wired into the app)
-- [ ] Collaboration panel (peers, join/host)
-- [~] Simulation panel (set up, run, view results): **run and summary done.** Add an example mass-spring-damper model and scenario, run a scenario of a saved twin (stored as a run), and see a summary of the latest run (`Project::run_scenario` / `run_summary`, 1 test). **Not done:** scenario editing (duration, initial conditions), plots, and a stale-run flag when parameters change after a run
-- [ ] Sensor panel and fusion visualisation
-- [ ] Export / import dialogs, including encryption options
+- [~] Parameter panel and feature tree: **parameter panel done.** Each parameter of the open twin has an editable field; numbers apply at once (not saved until Save), and text that is not a number is refused and blocks Save (`Project::edit_parameter`, 1 test). The feature tree is listed read-only in the Geometry card (`describe_step`, `Project::feature_tree`). **Not done:** editing the tree, and field-level validation ranges
+- [~] History panel (branches, commits, diff): **parameter history done.** Start history, commit the saved parameters, create and switch branches, merge a branch into the current one, compare any two commits (or a branch tip with the head) in the log, see the head commit's changes (`Project` history methods, 3 tests). Commit, switch and merge are refused while the twin has unsaved edits; a conflicting merge is refused and changes nothing. **Geometry history in the panel:** done in the Geometry card: commit, create, switch and merge branches (refused with uncommitted edits, and a conflicting merge changes nothing), list each branch's changes against the head, link, and gated runs (`Project` design methods, 2 tests). **Not done:** geometry commit messages typed in the window (fixed text for now)
+- [ ] Collaboration panel (peers, join/host): **done for parameters.** The Shared session card hosts or joins with an address and a session code (a new code can be generated), shows the shared parameters, sets one, and applies them to the open twin as unsaved edits. A joiner pins the host's fingerprint per address on first use (`collab-pins.txt`). The host's identity is kept in the user config folder. Two projects sharing parameters are tested headlessly (`two_projects_share_parameters_over_a_session`). Two codes per session: an edit code and a view-only code. View-only peers receive changes but their edits are ignored by the host (`Access`, tested over a raw connection too). The card shows how many peers are connected. Peers give a name when they join (`SyncClient::connect_as`, `SyncMessage::Hello.name`), and the host lists the names. **Not done:** presence beyond the names list, signed tokens (the codes are shared secrets; signed tokens need a security review first), and checking the card by eye (not yet looked at in the running window)
+- [~] Simulation panel (set up, run, view results): **run and summary done.** Add an example mass-spring-damper model and scenario, run a scenario of a saved twin (stored as a run), and see a summary of the latest run (`Project::run_scenario` / `run_summary`, 1 test). A run records the parameters it used (`StoredRun.parameters`, optional in older files), and its summary says "stale" when the twin's parameters have changed since. Scenario duration and initial conditions are editable (`Twin::set_scenario_duration` / `set_scenario_initial` in `twin-core`; the window's fields work like the parameter fields, and a refused value blocks Save). Plot: "Plot <scenario>" draws position and velocity of the stored run in a resizable right-hand panel (`Project::plot_series`, painted with egui in `main.rs`, since the canvas tree has no custom-drawing element). **Geometry stale flag:** a run is refused until the twin is linked to the design head, and its summary says "stale" when the geometry changed. **Not done:** checking the plot by eye (not yet looked at in the running window)
+- [~] Sensor panel and fusion visualisation: **sensor list done.** Add an IMU (50 Hz), remove a sensor (its recording goes too), and see each sensor's stored recording summary (`Project::sensors` / `add_imu` / `remove_sensor` / `recording_summary`, 1 test). Camera and lidar sensors can be added in the window (default settings), and "Plot" draws an IMU's stored recording (`PlotChoice::Sensor`, `Project::plot_data`). Each sensor's settings are editable in the window (IMU rate, camera field of view and size, lidar range and beams, mount position x/y/z; `Project::edit_sensor`, 2 tests), and a refused value blocks Save. **Lidar scan:** a lidar row counts the design surface points within its range (`Model::triangles`, `Project::lidar_summary`, sampled from the linked design; no occlusion). **Lidar plot:** "Plot scan" draws a saved lidar scan from above (`Project::lidar_scan_xy`, `scan_card`). **Camera output:** "Render" writes what a camera sees of the linked design as a greyscale PGM in the project folder (`twin_sensors::camera_depth`, a software pinhole projection with a depth test; no lighting, no clipping of triangles that cross the camera plane). **Lidar data:** "Save scan" writes the in-range points to `lidar-<name>.xyz`. **Not done:** fusion visualisation, and plots of the camera and lidar outputs
+- [~] Export / import dialogs, including encryption options: **basic Packages card done** (type a file path, export or import; the export key is the user's own, and imports pin signers). The window takes a passphrase for encrypted packages (session only, never saved). Export and import use native file dialogs (`rfd`, which needs GTK development libraries on Linux). **Not done:** a dedicated export/import dialog with its own options
 - [ ] Settings: network mode, data location. Nothing leaves the machine by default
 - [ ] Example twin projects
 
 ## Phase 8 — Licence key & distribution (`twin-license`)
 
 - [x] Key-file format and ed25519 offline verification (`twin-license`): JSON payload + base64 Ed25519 signature over the payload bytes. Checks signature, then product. 6 tests. Accepts a public key passed in; no key is compiled in
-- [ ] **Vendor public key:** generate the Ed25519 keypair privately and supply the public key. Not done here, so no key is fabricated or stored in the repo
-- [ ] Key-issuing tool (kept out of the public build or in a private tool)
-- [ ] Banner behaviour in official binaries; the source build works without a key
+- [x] **Vendor public key:** generated locally. The public key is committed at `keys/twin-vendor.pub` (`keys/README.md`); the private seed stays outside the repo in the vendor's `~/.tpt-keys/`. A test checks the key verifies. A licence signed with the private key was checked end to end (not committed)
+- [ ] Key-issuing tool (kept out of the public build or in a private tool). Not built: licences are signed by hand for now
+- [x] Banner behaviour in official binaries; the source build works without a key. Official builds (`--features official`) show a banner when `twin.license` is not in the project folder; `Project::open` never fails over a licence
 - [ ] Release workflow: build for Windows, macOS, Linux
-- [ ] Code signing and installers
+- [ ] Code signing and installers — **decided: defer until v1.0 is close** (certificate cost and timing)
 - [ ] Zip bundle: binaries + licence + quick-start guide (PDF) + examples (`GUMROAD.md`)
 - [ ] `SHA256SUMS`
-- [ ] Review the Ubuntu Font Licence (bundled egui font, allowed in `deny.toml`) before v1.0. Unmodified fonts only
-- [ ] Gumroad listing check against `GUMROAD.md` (price $349, 14-day refund)
-- [ ] Doc for submitting error reports
+- [~] Review the Ubuntu Font Licence (bundled egui font, allowed in `deny.toml`) before v1.0. Unmodified fonts only. **Decided: keep it** (the fonts are unmodified and `cargo deny` allows the licence). Final legal read still open
+- [x] Gumroad listing check against `GUMROAD.md` (price $349, 14-day refund): matches `GUMROAD.md`
+- [x] Doc for submitting error reports: `docs/ERROR_REPORTS.md`. Reports are sent by hand; nothing is sent automatically
 
 ## Phase 9 — Quality & release criteria (§9)
 
@@ -142,7 +144,7 @@ Source: `spec.txt` (section refs in parentheses). Tick boxes as you go: `- [x]`.
 - [ ] A full twin moves between machines cleanly
 - [ ] The app works with no network at all
 - [ ] Confirm there are zero outbound connections (network capture)
-- [ ] Binary size and startup/frame-time budgets set and measured
+- [~] Binary size and startup/frame-time budgets set and measured: **size measured** at 13.6 MB (Windows release build of `twin-app`, `cargo build --release`, unstripped, default profile). **Not done:** a budget to compare against, and startup and frame-time measurements
 - [ ] Smoke tests on all three platforms
 - [ ] Update `GUMROAD.md` system requirements to match measured numbers
 - [ ] v1.0 tag

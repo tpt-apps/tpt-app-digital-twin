@@ -7,10 +7,9 @@
 //! order the hub produced them.
 //!
 //! Security, per the architecture notes:
-//! - The server binds loopback only, unless the caller passes `allow_lan`.
-//!   Binding a LAN address is an explicit opt-in.
-//! - Joins are checked by the hub's token table. There is no encryption yet,
-//!   so LAN use is not safe on untrusted networks.
+//! - This plain transport binds loopback only. It is not encrypted, so it
+//!   never takes a LAN address. LAN use goes through `tls::serve_tls`.
+//! - Joins are checked by the hub's token table.
 //!
 //! The server threads run until the process exits. There is no shutdown.
 
@@ -29,14 +28,19 @@ type Writers = Arc<Mutex<HashMap<ConnId, TcpStream>>>;
 
 /// Start serving `hub` on `addr`. Returns the bound address (useful with port 0).
 ///
-/// Refuses a non-loopback address unless `allow_lan` is true.
-pub fn serve(hub: TwinHub, addr: &str, allow_lan: bool) -> io::Result<SocketAddr> {
+/// Refuses any non-loopback address. `allow_lan` has no effect here: LAN use
+/// needs the encrypted transport in `tls`.
+pub fn serve(hub: TwinHub, addr: &str, _allow_lan: bool) -> io::Result<SocketAddr> {
     let listener = TcpListener::bind(addr)?;
     let bound = listener.local_addr()?;
-    if !bound.ip().is_loopback() && !allow_lan {
+    // This transport is not encrypted, so it never leaves the machine. LAN use
+    // goes through `tls::serve_tls`.
+    if !bound.ip().is_loopback() {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
-            format!("{bound} is not a loopback address; pass allow_lan to bind it"),
+            format!(
+                "{bound} is not a loopback address; plain transport is loopback only, use tls::serve_tls for LAN"
+            ),
         ));
     }
     let hub = Arc::new(Mutex::new(hub));
@@ -129,7 +133,7 @@ impl Wire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hub::{advance_clock, TwinHub};
+    use crate::hub::{TwinHub, advance_clock};
     use std::time::Duration;
     use tpt_vertex_collab::clock::ReplicaId;
     use tpt_vertex_collab::crdt::{CrdtDoc, LocalReplica, ParamValue};

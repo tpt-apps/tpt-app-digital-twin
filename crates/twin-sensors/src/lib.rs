@@ -223,6 +223,93 @@ pub fn imu_from_trace(
         .collect())
 }
 
+/// Depth image of a triangle mesh seen by a pinhole camera, row by row, from
+/// the top-left pixel. The camera looks along the sensor's +Z axis; `fov_deg`
+/// is the horizontal field of view. Each entry is the distance in metres along
+/// +Z of the nearest surface at that pixel, or infinity where nothing is seen.
+///
+/// No occlusion beyond the depth test, no lighting, and triangles with any
+/// corner behind the camera are skipped (they are not clipped).
+pub fn camera_depth(
+    triangles: &[[[f64; 3]; 3]],
+    mount: &Mount,
+    fov_deg: f64,
+    width: u32,
+    height: u32,
+) -> Vec<f32> {
+    let (w, h) = (width as usize, height as usize);
+    let mut depth = vec![f32::INFINITY; w * h];
+    let r = rotation_from_euler(mount.euler_rad);
+    let t = mount.position_m;
+    let focal = (w as f64 / 2.0) / (fov_deg.to_radians() / 2.0).tan();
+    let (cx, cy) = (w as f64 / 2.0, h as f64 / 2.0);
+    let to_sensor = |p: [f64; 3]| {
+        let d = [p[0] - t[0], p[1] - t[1], p[2] - t[2]];
+        [0, 1, 2].map(|i| r[0][i] * d[0] + r[1][i] * d[1] + r[2][i] * d[2])
+    };
+    // Twice the signed area of (a, b, c) in pixel space.
+    let edge = |a: [f64; 2], b: [f64; 2], c: [f64; 2]| {
+        (c[0] - a[0]) * (b[1] - a[1]) - (c[1] - a[1]) * (b[0] - a[0])
+    };
+    for tri in triangles {
+        let p = tri.map(to_sensor);
+        if p.iter().any(|v| v[2] <= 1e-9) {
+            continue;
+        }
+        let q = p.map(|v| [cx + focal * v[0] / v[2], cy - focal * v[1] / v[2]]);
+        let area = edge(q[0], q[1], q[2]);
+        if area.abs() < 1e-12 {
+            continue;
+        }
+        let min_x = q
+            .iter()
+            .map(|v| v[0])
+            .fold(f64::INFINITY, f64::min)
+            .floor()
+            .max(0.0);
+        let max_x = q
+            .iter()
+            .map(|v| v[0])
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil()
+            .min(w as f64 - 1.0);
+        let min_y = q
+            .iter()
+            .map(|v| v[1])
+            .fold(f64::INFINITY, f64::min)
+            .floor()
+            .max(0.0);
+        let max_y = q
+            .iter()
+            .map(|v| v[1])
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil()
+            .min(h as f64 - 1.0);
+        if min_x > max_x || min_y > max_y {
+            continue;
+        }
+        for py in min_y as usize..=max_y as usize {
+            for px in min_x as usize..=max_x as usize {
+                let s = [px as f64 + 0.5, py as f64 + 0.5];
+                let w0 = edge(q[1], q[2], s) / area;
+                let w1 = edge(q[2], q[0], s) / area;
+                let w2 = edge(q[0], q[1], s) / area;
+                if w0 < 0.0 || w1 < 0.0 || w2 < 0.0 {
+                    continue;
+                }
+                // Depth is linear in 1/z on the screen, not in z.
+                let inv_z = w0 / p[0][2] + w1 / p[1][2] + w2 / p[2][2];
+                let z = (1.0 / inv_z) as f32;
+                let cell = &mut depth[py * w + px];
+                if z < *cell {
+                    *cell = z;
+                }
+            }
+        }
+    }
+    depth
+}
+
 /// Points on a triangle mesh, `per_edge` steps along each edge of every
 /// triangle. Deterministic: the same mesh and `per_edge` give the same points.
 /// Vertices are included. Spacing is roughly `edge length / per_edge`.
@@ -302,7 +389,7 @@ pub fn register_point_clouds(
     max_distance_m: f64,
 ) -> Result<Alignment, SensorError> {
     use tpt_percept_cloud::cloud::PointCloud;
-    use tpt_percept_register::icp::{icp, IcpParams, IcpVariant};
+    use tpt_percept_register::icp::{IcpParams, IcpVariant, icp};
 
     let params = IcpParams {
         max_correspondence_distance: max_distance_m,
@@ -689,10 +776,36 @@ mod tests {
         let tri = [[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]]];
         let pts = sample_surface(&tri, 4);
         assert_eq!(pts.len(), 15); // (n+1)(n+2)/2
-        assert!(pts
-            .iter()
-            .all(|p| p[2] == 0.0 && p[0] >= 0.0 && p[1] >= 0.0 && p[0] + p[1] <= 1.0 + 1e-12));
+        assert!(
+            pts.iter()
+                .all(|p| p[2] == 0.0 && p[0] >= 0.0 && p[1] >= 0.0 && p[0] + p[1] <= 1.0 + 1e-12)
+        );
         assert!(pts.contains(&[1.0, 0.0, 0.0]) && pts.contains(&[0.0, 1.0, 0.0]));
+    }
+
+    #[test]
+    fn a_camera_sees_a_square_at_its_distance_and_misses_the_rest() {
+        // A unit square 2 m in front of the camera, facing it.
+        let square = [
+            [[-1.0, -1.0, 2.0], [1.0, -1.0, 2.0], [1.0, 1.0, 2.0]],
+            [[-1.0, -1.0, 2.0], [1.0, 1.0, 2.0], [-1.0, 1.0, 2.0]],
+        ];
+        let mount = Mount::default();
+        let depth = camera_depth(&square, &mount, 60.0, 16, 16);
+        let centre = depth[8 * 16 + 8];
+        assert!((centre - 2.0).abs() < 1e-4, "{centre}");
+        let hit = depth.iter().filter(|d| d.is_finite()).count();
+        assert!(hit > 0 && hit < depth.len(), "hit {hit} of {}", depth.len());
+        // Corners of the image are outside the square.
+        assert!(depth[0].is_infinite());
+
+        // Moving the camera closer to the square shortens the depth.
+        let closer = Mount {
+            position_m: [0.0, 0.0, 1.0],
+            ..Mount::default()
+        };
+        let depth = camera_depth(&square, &closer, 60.0, 16, 16);
+        assert!((depth[8 * 16 + 8] - 1.0).abs() < 1e-4);
     }
 
     #[test]

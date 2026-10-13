@@ -12,15 +12,18 @@
 //! transport, and geometry and sensors are not shared yet.
 
 pub mod hub;
+pub mod sync;
+pub mod tls;
 pub mod transport;
 
-pub use hub::{deliver, Client, SessionError, TwinHub};
-pub use transport::{serve, Wire};
+pub use hub::{Client, SessionError, TwinHub, deliver};
+pub use transport::{Wire, serve};
 
 use std::collections::BTreeMap;
 
 use tpt_vertex_collab::clock::ReplicaId;
-use tpt_vertex_collab::crdt::{FeatureKey, LocalReplica, Op, ParamValue};
+pub use tpt_vertex_collab::crdt::{FeatureKey, Op};
+use tpt_vertex_collab::crdt::{LocalReplica, ParamValue};
 use twin_core::{Twin, TwinError};
 
 /// One collaborator's copy of a twin's parameters.
@@ -107,6 +110,48 @@ impl TwinReplica {
 
     pub fn log_len(&self) -> usize {
         self.log.len()
+    }
+
+    /// Every op this replica has applied, in order.
+    pub fn ops(&self) -> &[Op] {
+        &self.log
+    }
+
+    /// The feature the parameters belong to. Replicas that share it see the
+    /// same parameters.
+    pub fn feature(&self) -> FeatureKey {
+        self.feature
+    }
+
+    /// The op made by the latest `set_parameter`, to send to other replicas.
+    pub fn last_op(&self) -> Option<&Op> {
+        self.log.last()
+    }
+
+    /// Start replica `id` from a snapshot of another replica: its feature and
+    /// its complete op log.
+    pub fn from_snapshot(id: u64, feature: FeatureKey, ops: &[Op]) -> Self {
+        let mut this = Self {
+            replica: LocalReplica::new(ReplicaId(id)),
+            feature,
+            log: Vec::new(),
+        };
+        this.receive_ops(ops);
+        this
+    }
+
+    /// Apply the ops this replica does not have yet, and return them. Ops it
+    /// already has are ignored, so the same ops can arrive more than once.
+    pub fn receive_ops(&mut self, ops: &[Op]) -> Vec<Op> {
+        let mut fresh = Vec::new();
+        for op in ops {
+            if !self.log.contains(op) {
+                self.replica.receive(op);
+                self.log.push(op.clone());
+                fresh.push(op.clone());
+            }
+        }
+        fresh
     }
 }
 

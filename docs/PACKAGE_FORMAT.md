@@ -20,6 +20,7 @@ A `.twin` file is a zip archive, optionally wrapped in passphrase encryption. Sp
   "format_version": 1,
   "twin_id": "6f1c2a3e-…",
   "created": "2026-10-10T00:00:00Z",
+  "signer": "<64 hex digits: the signer's Ed25519 public key>",
   "entries": [
     { "path": "twin.json", "sha256": "<hex>", "size": 412 },
     { "path": "geometry/model.bin", "sha256": "<hex>", "size": 4 }
@@ -29,6 +30,11 @@ A `.twin` file is a zip archive, optionally wrapped in passphrase encryption. Sp
 
 - `twin.json` is always listed. Its `id` must equal `twin_id`.
 - Every entry is listed, with its SHA-256 and byte size.
+- `signer` is the public key that signed the manifest. It is covered by the signature. Packages made before it existed have no `signer`; they can be read only with a key that is supplied explicitly.
+
+### Trust on first use
+
+The app pins the signer of each twin the first time it imports that twin (the pins are kept in `trusted-signers.txt` in the project folder). A later package for the same twin signed by a different key is refused. Each user signs their own exports with a key created on first use in their settings folder: `%APPDATA%\twin\export-key.seed` on Windows, or `~/.config/twin/export-key.seed` elsewhere. Keep that file private. To accept a new key for a twin, delete its line in `trusted-signers.txt`; do this only if you trust the new key.
 
 ### Import rules
 
@@ -66,6 +72,6 @@ Wrapping is applied to the whole plain package.
 
 ## Open items
 
-- Which key signs user exports. Users need a per-user key or a shared trust store, not a vendor key. Not yet decided.
+- Which key signs user exports: decided. Each user has a key of their own, and imports pin the signer per twin (see Trust on first use). A key that is lost cannot sign new packages for the same twin, so the pin must be reset by hand.
 - Keystone snapshot entries (`keystone/…`). Phase 1 stores the twin in Keystone but has no snapshot export yet.
 - Geometry and result entries: their formats are defined by Phases 2 and 4.
