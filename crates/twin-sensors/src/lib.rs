@@ -368,14 +368,194 @@ pub fn lidar_returns_with_noise(
     range_m: f64,
     noise: RangeNoise,
 ) -> Result<Vec<[f64; 3]>, SensorError> {
-    if !(noise.sigma_m.is_finite() && noise.sigma_m >= 0.0) {
+    add_range_noise(lidar_returns(world_points, mount, range_m), noise)
+}
+
+/// Where a lidar's beams point, in the sensor frame: `azimuth_count` beams
+/// spread evenly around the full circle, at `elevation_count` elevations spread
+/// evenly from `elevation_min_rad` to `elevation_max_rad` (both inclusive).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct BeamPattern {
+    pub azimuth_count: usize,
+    pub elevation_count: usize,
+    pub elevation_min_rad: f64,
+    pub elevation_max_rad: f64,
+}
+
+impl BeamPattern {
+    /// The pattern for a lidar with `beams` returns per sweep: that many
+    /// azimuths, in 8 rows spread over ±15 degrees of elevation.
+    pub fn for_beams(beams: u32) -> Self {
+        let limit = 15f64.to_radians();
+        Self {
+            azimuth_count: beams as usize,
+            elevation_count: 8,
+            elevation_min_rad: -limit,
+            elevation_max_rad: limit,
+        }
+    }
+
+    fn validate(&self) -> Result<(), SensorError> {
+        let bad = |what| SensorError::BadValue {
+            name: "lidar beam pattern".into(),
+            what,
+        };
+        if self.azimuth_count == 0 {
+            return Err(bad("azimuth count"));
+        }
+        if self.elevation_count == 0 {
+            return Err(bad("elevation count"));
+        }
+        if !(self.elevation_min_rad.is_finite()
+            && self.elevation_max_rad.is_finite()
+            && self.elevation_min_rad <= self.elevation_max_rad)
+        {
+            return Err(bad("elevation range"));
+        }
+        Ok(())
+    }
+}
+
+/// A beam scan of a mesh: each beam from the sensor returns the nearest surface
+/// it hits within `range_m`, so surfaces behind others are occluded and beams
+/// that meet nothing return nothing. Returns are in the sensor frame. With
+/// `noise`, each return also gets the range error of [`RangeNoise`].
+///
+/// Beams are cast into the triangles one by one (no acceleration structure),
+/// which is fine for the small designs the app builds.
+pub fn lidar_beam_scan(
+    triangles: &[[[f64; 3]; 3]],
+    mount: &Mount,
+    range_m: f64,
+    pattern: &BeamPattern,
+    noise: Option<RangeNoise>,
+) -> Result<Vec<[f64; 3]>, SensorError> {
+    if !(range_m.is_finite() && range_m > 0.0) {
         return Err(SensorError::BadValue {
-            name: "lidar range noise".into(),
-            what: "standard deviation",
+            name: "lidar".into(),
+            what: "range",
         });
     }
+    pattern.validate()?;
+    let r = rotation_from_euler(mount.euler_rad);
+    let origin = mount.position_m;
+    let mut returns = Vec::new();
+    for row in 0..pattern.elevation_count {
+        let el = if pattern.elevation_count == 1 {
+            pattern.elevation_min_rad
+        } else {
+            let f = row as f64 / (pattern.elevation_count - 1) as f64;
+            pattern.elevation_min_rad + f * (pattern.elevation_max_rad - pattern.elevation_min_rad)
+        };
+        for col in 0..pattern.azimuth_count {
+            let az = std::f64::consts::TAU * col as f64 / pattern.azimuth_count as f64;
+            // Beam direction in the sensor frame, then in the world frame.
+            let local = [el.cos() * az.cos(), el.cos() * az.sin(), el.sin()];
+            let world =
+                [0, 1, 2].map(|i| r[i][0] * local[0] + r[i][1] * local[1] + r[i][2] * local[2]);
+            let nearest = triangles
+                .iter()
+                .filter_map(|t| ray_triangle(origin, world, t))
+                .filter(|&t| t <= range_m)
+                .fold(None, |best: Option<f64>, t| {
+                    Some(best.map_or(t, |b| b.min(t)))
+                });
+            if let Some(t) = nearest {
+                returns.push(local.map(|d| d * t));
+            }
+        }
+    }
+    Ok(match noise {
+        Some(noise) => add_range_noise(returns, noise)?,
+        None => returns,
+    })
+}
+
+/// Distance along a ray from `origin` in direction `dir` to triangle `tri`
+/// (Möller–Trumbore), or `None` if the ray misses it or it is behind the origin.
+/// Both sides of a triangle count.
+fn ray_triangle(origin: [f64; 3], dir: [f64; 3], tri: &[[f64; 3]; 3]) -> Option<f64> {
+    const EPS: f64 = 1e-12;
+    let e1 = sub(tri[1], tri[0]);
+    let e2 = sub(tri[2], tri[0]);
+    let p = cross(dir, e2);
+    let det = dot(e1, p);
+    if det.abs() < EPS {
+        return None;
+    }
+    let inv = 1.0 / det;
+    let s = sub(origin, tri[0]);
+    let u = dot(s, p) * inv;
+    if !(0.0..=1.0).contains(&u) {
+        return None;
+    }
+    let q = cross(s, e1);
+    let v = dot(dir, q) * inv;
+    if v < 0.0 || u + v > 1.0 {
+        return None;
+    }
+    let t = dot(e2, q) * inv;
+    (t > EPS).then_some(t)
+}
+
+fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+    a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+/// Acceleration noise of an IMU: each sample gets a zero-mean Gaussian error of
+/// standard deviation `sigma_m_s2`, from a seeded generator (repeatable).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AccelNoise {
+    pub sigma_m_s2: f64,
+    pub seed: u64,
+}
+
+/// [`imu_from_trace`] with acceleration noise. Zero sigma gives the noise-free
+/// readings.
+pub fn imu_from_trace_with_noise(
+    body: &MassSpringDamper,
+    trace: &Trace,
+    noise: AccelNoise,
+) -> Result<Vec<ImuSample>, SensorError> {
+    check_sigma(noise.sigma_m_s2, "IMU acceleration noise")?;
     let mut rng = GaussianRng::new(noise.seed);
-    Ok(lidar_returns(world_points, mount, range_m)
+    Ok(imu_from_trace(body, trace)?
+        .into_iter()
+        .map(|s| ImuSample {
+            accel_m_s2: s.accel_m_s2 + noise.sigma_m_s2 * rng.next_normal(),
+            ..s
+        })
+        .collect())
+}
+
+fn check_sigma(sigma: f64, name: &str) -> Result<(), SensorError> {
+    if sigma.is_finite() && sigma >= 0.0 {
+        Ok(())
+    } else {
+        Err(SensorError::BadValue {
+            name: name.into(),
+            what: "standard deviation",
+        })
+    }
+}
+
+/// Push each point along its ray by a seeded Gaussian range error.
+fn add_range_noise(points: Vec<[f64; 3]>, noise: RangeNoise) -> Result<Vec<[f64; 3]>, SensorError> {
+    check_sigma(noise.sigma_m, "lidar range noise")?;
+    let mut rng = GaussianRng::new(noise.seed);
+    Ok(points
         .into_iter()
         .map(|q| {
             let r = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2]).sqrt();
@@ -1015,6 +1195,147 @@ mod tests {
             (var.sqrt() - sigma).abs() < 0.05 * sigma,
             "spread {}",
             var.sqrt()
+        );
+    }
+
+    fn one_beam_forward() -> BeamPattern {
+        BeamPattern {
+            azimuth_count: 4,
+            elevation_count: 1,
+            elevation_min_rad: 0.0,
+            elevation_max_rad: 0.0,
+        }
+    }
+
+    #[test]
+    fn a_beam_returns_the_nearest_surface_and_nothing_behind_it_shows() {
+        let near = cube([5.0, 0.0, 0.0], 1.0);
+        let mut both = near.clone();
+        both.extend(cube([7.0, 0.0, 0.0], 1.0));
+        let mount = Mount::default();
+        let pattern = one_beam_forward();
+        let alone = lidar_beam_scan(&near, &mount, 10.0, &pattern, None).unwrap();
+        let behind = lidar_beam_scan(&both, &mount, 10.0, &pattern, None).unwrap();
+        assert_eq!(alone.len(), 1, "only the forward beam meets the cube");
+        // The near face is at x = 4. The cube behind it at x = 6..8 is hidden.
+        assert!((alone[0][0] - 4.0).abs() < 1e-9 && alone[0][1].abs() < 1e-9);
+        assert_eq!(behind, alone, "the far cube is occluded");
+    }
+
+    #[test]
+    fn beams_stop_at_the_range_limit() {
+        let triangles = cube([5.0, 0.0, 0.0], 1.0);
+        let mount = Mount::default();
+        let pattern = one_beam_forward();
+        assert!(
+            lidar_beam_scan(&triangles, &mount, 3.0, &pattern, None)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            lidar_beam_scan(&triangles, &mount, 4.5, &pattern, None)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn the_mount_rotates_the_beams_into_the_world() {
+        // Yaw of pi turns the sensor's forward beam to world -x, where the cube is.
+        let triangles = cube([-5.0, 0.0, 0.0], 1.0);
+        let mount = Mount {
+            position_m: [0.0; 3],
+            euler_rad: [0.0, 0.0, std::f64::consts::PI],
+        };
+        let hits = lidar_beam_scan(&triangles, &mount, 10.0, &one_beam_forward(), None).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!((hits[0][0] - 4.0).abs() < 1e-9, "{hits:?}");
+    }
+
+    #[test]
+    fn beam_scan_rejects_bad_patterns_and_ranges() {
+        let triangles = cube([5.0, 0.0, 0.0], 1.0);
+        let mount = Mount::default();
+        let mut bad = one_beam_forward();
+        bad.azimuth_count = 0;
+        assert!(lidar_beam_scan(&triangles, &mount, 10.0, &bad, None).is_err());
+        let mut inverted = one_beam_forward();
+        inverted.elevation_min_rad = 0.5;
+        inverted.elevation_max_rad = -0.5;
+        assert!(lidar_beam_scan(&triangles, &mount, 10.0, &inverted, None).is_err());
+        assert!(lidar_beam_scan(&triangles, &mount, 0.0, &one_beam_forward(), None).is_err());
+    }
+
+    #[test]
+    fn the_default_pattern_has_one_azimuth_per_beam() {
+        // Inside a closed unit-half cube every beam meets a wall, at a distance
+        // between 1 (the side walls) and sqrt(3) (the corners). The count is
+        // one return per beam, azimuths times elevations.
+        let pattern = BeamPattern::for_beams(360);
+        assert_eq!(pattern.azimuth_count, 360);
+        assert_eq!(pattern.elevation_count, 8);
+        let scan = lidar_beam_scan(
+            &cube([0.0; 3], 1.0),
+            &Mount::default(),
+            10.0,
+            &pattern,
+            None,
+        )
+        .unwrap();
+        assert_eq!(scan.len(), 360 * 8);
+        for p in &scan {
+            let r = (p[0] * p[0] + p[1] * p[1] + p[2] * p[2]).sqrt();
+            assert!(r >= 1.0 - 1e-9 && r <= 3f64.sqrt() + 1e-9, "{r}");
+        }
+    }
+
+    #[test]
+    fn imu_noise_is_seeded_centred_and_zero_sigma_is_noise_free() {
+        let body = MassSpringDamper {
+            mass: 2.0,
+            stiffness: 8.0,
+            damping: 0.0,
+        };
+        let n = 4000;
+        let trace = Trace {
+            times: (0..n).map(|i| i as f64 * 0.01).collect(),
+            states: vec![[1.0, 0.0]; n],
+        };
+        let clean = imu_from_trace(&body, &trace).unwrap();
+        let zero = AccelNoise {
+            sigma_m_s2: 0.0,
+            seed: 3,
+        };
+        assert_eq!(
+            imu_from_trace_with_noise(&body, &trace, zero).unwrap(),
+            clean
+        );
+        let noisy = AccelNoise {
+            sigma_m_s2: 0.1,
+            seed: 3,
+        };
+        let a = imu_from_trace_with_noise(&body, &trace, noisy).unwrap();
+        assert_eq!(a, imu_from_trace_with_noise(&body, &trace, noisy).unwrap());
+        let errors: Vec<f64> = a
+            .iter()
+            .zip(&clean)
+            .map(|(x, c)| x.accel_m_s2 - c.accel_m_s2)
+            .collect();
+        let mean = errors.iter().sum::<f64>() / n as f64;
+        let sd = (errors.iter().map(|e| (e - mean).powi(2)).sum::<f64>() / n as f64).sqrt();
+        assert!(mean.abs() < 4.0 * 0.1 / (n as f64).sqrt(), "bias {mean}");
+        assert!((sd - 0.1).abs() < 0.005, "spread {sd}");
+        assert!(
+            imu_from_trace_with_noise(
+                &body,
+                &trace,
+                AccelNoise {
+                    sigma_m_s2: -1.0,
+                    seed: 1
+                }
+            )
+            .is_err()
         );
     }
 }

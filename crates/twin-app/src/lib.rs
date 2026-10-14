@@ -492,12 +492,10 @@ pub const EXAMPLE_SCENARIO: &str = "free-vibration";
 /// One lidar scan of the design, before it is summarised or saved.
 struct LidarScan {
     range_m: f64,
-    sampled: usize,
+    beams: usize,
     returns: Vec<[f64; 3]>,
 }
 
-/// Points sampled along each edge of a face when a lidar scans the geometry.
-const LIDAR_SAMPLES_PER_EDGE: usize = 8;
 /// Samples per simulated run, evenly spaced over the scenario duration.
 const RUN_SAMPLES: usize = 100;
 
@@ -1731,9 +1729,9 @@ impl Project {
     pub fn lidar_summary(&self, sensor: &str) -> Result<Option<String>, ProjectError> {
         Ok(self.scan_lidar(sensor)?.map(|scan| {
             format!(
-                "{} of {} sampled surface points within {} m (no occlusion)",
+                "{} returns from {} beams within {} m (occlusion on)",
                 scan.returns.len(),
-                scan.sampled,
+                scan.beams,
                 scan.range_m
             )
         }))
@@ -1751,13 +1749,7 @@ impl Project {
         let text: String = scan
             .returns
             .iter()
-            .map(|p| {
-                format!(
-                    "{} {} {}
-",
-                    p[0], p[1], p[2]
-                )
-            })
+            .map(|p| format!("{} {} {}\n", p[0], p[1], p[2]))
             .collect();
         std::fs::write(&path, text)?;
         Ok(Some(format!(
@@ -1777,15 +1769,21 @@ impl Project {
             .iter()
             .find(|s| s.name == sensor)
             .ok_or_else(|| ProjectError::NoSensor(sensor.to_string()))?;
-        let SensorKind::Lidar { range_m, .. } = found.kind else {
+        let SensorKind::Lidar { range_m, beams } = found.kind else {
             return Ok(None);
         };
         let model = design.preview().map_err(DesignError::from)?;
-        let points = twin_sensors::sample_surface(&model.triangles(), LIDAR_SAMPLES_PER_EDGE);
-        let returns = twin_sensors::lidar_returns(&points, &found.mount, range_m);
+        let pattern = twin_sensors::BeamPattern::for_beams(beams);
+        let returns = twin_sensors::lidar_beam_scan(
+            &model.triangles(),
+            &found.mount,
+            range_m,
+            &pattern,
+            None,
+        )?;
         Ok(Some(LidarScan {
             range_m,
-            sampled: points.len(),
+            beams: pattern.azimuth_count * pattern.elevation_count,
             returns,
         }))
     }
