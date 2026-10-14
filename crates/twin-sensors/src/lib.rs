@@ -568,6 +568,176 @@ fn add_range_noise(points: Vec<[f64; 3]>, noise: RangeNoise) -> Result<Vec<[f64;
         .collect())
 }
 
+/// A position measurement along the IMU axis, from registration or any other
+/// source, at a time within the IMU record.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PositionFix {
+    pub time_s: f64,
+    pub position_m: f64,
+}
+
+/// Noise levels for [`fuse_position`]: the standard deviation of the
+/// acceleration (process) and of each position fix (measurement), in metres.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FusionNoise {
+    pub accel_sigma_m_s2: f64,
+    pub fix_sigma_m: f64,
+}
+
+/// The fused estimate at one IMU sample time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FusedState {
+    pub time_s: f64,
+    pub position_m: f64,
+    pub velocity_m_s: f64,
+    /// One standard deviation of the position estimate, in metres.
+    pub position_std_m: f64,
+}
+
+/// Linear Kalman filter over position and velocity along the IMU axis.
+///
+/// The IMU's acceleration drives the prediction (constant over each sample
+/// interval), and each position fix corrects it. The state is `[p, v]`, the
+/// model is linear, so this is the exact filter and no linearisation is
+/// needed. Yaw is not estimated: there is no gyro model.
+///
+/// The filter starts at `initial_position_m` and `initial_velocity_m_s`, with
+/// the position uncertainty of one fix and a velocity uncertainty of one
+/// metre per second. Fixes must lie within the IMU record. The result has one
+/// state per IMU sample.
+pub fn fuse_position(
+    imu: &[ImuSample],
+    fixes: &[PositionFix],
+    noise: FusionNoise,
+    initial_position_m: f64,
+    initial_velocity_m_s: f64,
+) -> Result<Vec<FusedState>, SensorError> {
+    check_sigma(noise.accel_sigma_m_s2, "fusion acceleration noise")?;
+    if !(noise.fix_sigma_m.is_finite() && noise.fix_sigma_m > 0.0) {
+        return Err(SensorError::BadValue {
+            name: "fusion".into(),
+            what: "fix standard deviation",
+        });
+    }
+    let (Some(first), Some(last)) = (imu.first(), imu.last()) else {
+        return Ok(Vec::new());
+    };
+    if !initial_position_m.is_finite() || !initial_velocity_m_s.is_finite() {
+        return Err(SensorError::NotFinite);
+    }
+    let mut fixes = fixes.to_vec();
+    fixes.sort_by(|a, b| a.time_s.total_cmp(&b.time_s));
+    if fixes.iter().any(|f| {
+        !(f.time_s >= first.time_s && f.time_s <= last.time_s) || !f.position_m.is_finite()
+    }) {
+        return Err(SensorError::BadValue {
+            name: "fusion".into(),
+            what: "fix time or position (must lie within the IMU record)",
+        });
+    }
+
+    let r = noise.fix_sigma_m * noise.fix_sigma_m;
+    let q_accel = noise.accel_sigma_m_s2 * noise.accel_sigma_m_s2;
+    let mut x = [initial_position_m, initial_velocity_m_s];
+    let mut p = [[r, 0.0], [0.0, 1.0]];
+    let mut out = vec![FusedState {
+        time_s: first.time_s,
+        position_m: x[0],
+        velocity_m_s: x[1],
+        position_std_m: p[0][0].sqrt(),
+    }];
+    let mut next_fix = 0;
+    for pair in imu.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let mut t = a.time_s;
+        // Apply each fix that falls in this interval, predicting up to it first.
+        while next_fix < fixes.len() && fixes[next_fix].time_s <= b.time_s {
+            let fix = fixes[next_fix];
+            next_fix += 1;
+            let (a0, a1) = (accel_between(a, b, t), accel_between(a, b, fix.time_s));
+            (x, p) = predict(x, p, a0, a1, fix.time_s - t, q_accel);
+            t = fix.time_s;
+            // Measurement update with H = [1, 0].
+            let s = p[0][0] + r;
+            let k = [p[0][0] / s, p[1][0] / s];
+            let innovation = fix.position_m - x[0];
+            x = [x[0] + k[0] * innovation, x[1] + k[1] * innovation];
+            let p00 = p[0][0];
+            let p01 = p[0][1];
+            p = [
+                [p00 - k[0] * p00, p01 - k[0] * p01],
+                [p[1][0] - k[1] * p00, p[1][1] - k[1] * p01],
+            ];
+        }
+        (x, p) = predict(
+            x,
+            p,
+            accel_between(a, b, t),
+            b.accel_m_s2,
+            b.time_s - t,
+            q_accel,
+        );
+        out.push(FusedState {
+            time_s: b.time_s,
+            position_m: x[0],
+            velocity_m_s: x[1],
+            position_std_m: p[0][0].sqrt(),
+        });
+    }
+    Ok(out)
+}
+
+/// The IMU acceleration at time `t` in the interval from sample `a` to `b`,
+/// interpolated linearly. The IMU samples are the only measurements of it.
+fn accel_between(a: ImuSample, b: ImuSample, t: f64) -> f64 {
+    let span = b.time_s - a.time_s;
+    if span <= 0.0 {
+        return a.accel_m_s2;
+    }
+    let f = ((t - a.time_s) / span).clamp(0.0, 1.0);
+    a.accel_m_s2 + (b.accel_m_s2 - a.accel_m_s2) * f
+}
+
+/// One prediction step of the filter over `dt` seconds, with the acceleration
+/// varying linearly from `a0` to `a1`, adding the acceleration noise `q_accel`.
+/// For linear acceleration the position and velocity updates are exact.
+fn predict(
+    x: [f64; 2],
+    p: [[f64; 2]; 2],
+    a0: f64,
+    a1: f64,
+    dt: f64,
+    q_accel: f64,
+) -> ([f64; 2], [[f64; 2]; 2]) {
+    let x_next = [
+        x[0] + x[1] * dt + dt * dt * (a0 / 3.0 + a1 / 6.0),
+        x[1] + dt * (a0 + a1) / 2.0,
+    ];
+    // F = [[1, dt], [0, 1]]; process noise Q = G G^T q with G = [dt²/2, dt].
+    let f = [[1.0, dt], [0.0, 1.0]];
+    let fp = [
+        [
+            f[0][0] * p[0][0] + f[0][1] * p[1][0],
+            f[0][0] * p[0][1] + f[0][1] * p[1][1],
+        ],
+        [p[1][0], p[1][1]],
+    ];
+    let fpft = [
+        [fp[0][0] + fp[0][1] * dt, fp[0][1]],
+        [fp[1][0] + fp[1][1] * dt, fp[1][1]],
+    ];
+    let g = [0.5 * dt * dt, dt];
+    let q = [
+        [g[0] * g[0] * q_accel, g[0] * g[1] * q_accel],
+        [g[1] * g[0] * q_accel, g[1] * g[1] * q_accel],
+    ];
+    let p_next = [
+        [fpft[0][0] + q[0][0], fpft[0][1] + q[0][1]],
+        [fpft[1][0] + q[1][0], fpft[1][1] + q[1][1]],
+    ];
+    (x_next, p_next)
+}
+
 /// A small seeded generator (splitmix64) with Gaussian samples by Box–Muller.
 /// Not for security: it only makes simulated noise repeatable.
 struct GaussianRng {
@@ -1337,5 +1507,139 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    /// A simulated spring-mass truth from x0 = 1, v0 = 0 over 10 s, sampled at
+    /// `times`, with the body it came from.
+    fn spring_truth(times: &[f64]) -> (MassSpringDamper, Trace) {
+        use std::collections::BTreeMap;
+        let mut twin = twin_core::Twin::new("spring").unwrap();
+        twin.set_parameter(twin_sim::MASS, 2.0).unwrap();
+        twin.set_parameter(twin_sim::STIFFNESS, 8.0).unwrap();
+        twin.set_parameter(twin_sim::DAMPING, 0.4).unwrap();
+        let scenario = twin_core::Scenario {
+            name: "truth".into(),
+            duration_s: 10.0,
+            initial_conditions: BTreeMap::from([
+                (twin_sim::POSITION0.to_string(), 1.0),
+                (twin_sim::VELOCITY0.to_string(), 0.0),
+            ]),
+            controller: None,
+        };
+        let trace = twin_sim::simulate(&twin, &scenario, times).unwrap();
+        let body = MassSpringDamper::from_twin(&twin).unwrap();
+        (body, trace)
+    }
+
+    #[test]
+    fn imu_alone_reproduces_the_truth_when_noise_free() {
+        let imu_times = sample_times(100.0, 10.0).unwrap();
+        let (body, truth) = spring_truth(&imu_times);
+        let imu = imu_from_trace(&body, &truth).unwrap();
+        let fused = fuse_position(
+            &imu,
+            &[],
+            FusionNoise {
+                accel_sigma_m_s2: 0.0,
+                fix_sigma_m: 0.1,
+            },
+            1.0,
+            0.0,
+        )
+        .unwrap();
+        assert_eq!(fused.len(), imu.len());
+        let worst = fused
+            .iter()
+            .zip(&truth.states)
+            .map(|(f, s)| (f.position_m - s[0]).abs())
+            .fold(0.0_f64, f64::max);
+        assert!(worst < 2e-3, "worst position error {worst}");
+    }
+
+    #[test]
+    fn fusing_fixes_beats_the_raw_fixes() {
+        let imu_times = sample_times(100.0, 10.0).unwrap();
+        let (body, truth) = spring_truth(&imu_times);
+        let accel_sigma = 0.05;
+        let fix_sigma = 0.1;
+        let imu = imu_from_trace_with_noise(
+            &body,
+            &truth,
+            AccelNoise {
+                sigma_m_s2: accel_sigma,
+                seed: 11,
+            },
+        )
+        .unwrap();
+        // Fixes every half second, from the truth plus Gaussian error.
+        let fix_times: Vec<f64> = (1..20).map(|k| 0.5 * k as f64).collect();
+        let (_, fix_truth) = spring_truth(&fix_times);
+        let mut rng = GaussianRng::new(5);
+        let fixes: Vec<PositionFix> = fix_times
+            .iter()
+            .zip(&fix_truth.states)
+            .map(|(&t, s)| PositionFix {
+                time_s: t,
+                position_m: s[0] + fix_sigma * rng.next_normal(),
+            })
+            .collect();
+        let raw_rms = (fixes
+            .iter()
+            .zip(&fix_truth.states)
+            .map(|(f, s)| (f.position_m - s[0]).powi(2))
+            .sum::<f64>()
+            / fixes.len() as f64)
+            .sqrt();
+
+        let fused = fuse_position(
+            &imu,
+            &fixes,
+            FusionNoise {
+                accel_sigma_m_s2: accel_sigma,
+                fix_sigma_m: fix_sigma,
+            },
+            1.0,
+            0.0,
+        )
+        .unwrap();
+        let fused_rms = (fused
+            .iter()
+            .zip(&truth.states)
+            .map(|(f, s)| (f.position_m - s[0]).powi(2))
+            .sum::<f64>()
+            / fused.len() as f64)
+            .sqrt();
+        // Fixes every 0.5 s, 0.1 m each, with 0.05 m/s² accelerometer noise: the
+        // filter roughly halves the raw error (about 0.53 here). The bound is
+        // kept a little loose, so the test does not depend on the exact seed.
+        assert!(
+            fused_rms < 0.6 * raw_rms,
+            "fused {fused_rms} vs raw {raw_rms}"
+        );
+        // The filter says how sure it is, and that improves once fixes arrive.
+        let early = fused[1].position_std_m;
+        let late = fused.last().unwrap().position_std_m;
+        assert!(late < early.max(fix_sigma), "std {early} -> {late}");
+    }
+
+    #[test]
+    fn fixes_outside_the_imu_record_are_refused() {
+        let imu_times = sample_times(10.0, 1.0).unwrap();
+        let (body, truth) = spring_truth(&imu_times);
+        let imu = imu_from_trace(&body, &truth).unwrap();
+        let noise = FusionNoise {
+            accel_sigma_m_s2: 0.1,
+            fix_sigma_m: 0.1,
+        };
+        let late = [PositionFix {
+            time_s: 2.0,
+            position_m: 0.0,
+        }];
+        assert!(fuse_position(&imu, &late, noise, 1.0, 0.0).is_err());
+        let bad_sigma = FusionNoise {
+            accel_sigma_m_s2: 0.1,
+            fix_sigma_m: 0.0,
+        };
+        assert!(fuse_position(&imu, &[], bad_sigma, 1.0, 0.0).is_err());
     }
 }
